@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>내일은 번트왕 — 서비스 개요</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
+  background: #f5f7fa;
+  color: #1a1a2e;
+  min-height: 100vh;
+  padding: 40px 32px;
+}
+
+/* 헤더 */
+.header {
+  text-align: center;
+  margin-bottom: 48px;
+}
+.header h1 {
+  font-size: 2rem;
+  font-weight: 800;
+  color: #1a1a2e;
+  margin-bottom: 8px;
+}
+.header h1 span { color: #f0a500; }
+.header p {
+  font-size: 1rem;
+  color: #666;
+  max-width: 600px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* 한 줄 요약 배너 */
+.banner {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  color: #fff;
+  border-radius: 16px;
+  padding: 20px 32px;
+  text-align: center;
+  margin-bottom: 48px;
+  max-width: 860px;
+  margin-left: auto;
+  margin-right: auto;
+  margin-bottom: 48px;
+}
+.banner p { font-size: 1.05rem; line-height: 1.7; color: #c9d1d9; }
+.banner strong { color: #f0a500; }
+
+/* 섹션 제목 */
+.section-title {
+  text-align: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #999;
+  margin-bottom: 20px;
+}
+
+/* ── 메인 플로우 ── */
+.flow-container {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0;
+  max-width: 1060px;
+  margin: 0 auto 48px;
+  flex-wrap: nowrap;
+}
+
+.flow-step {
+  flex: 1;
+  background: #fff;
+  border-radius: 20px;
+  padding: 28px 20px;
+  text-align: center;
+  box-shadow: 0 2px 16px rgba(0,0,0,0.07);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  min-width: 0;
+}
+
+.flow-step .num {
+  position: absolute;
+  top: -13px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a1a2e;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flow-step .big-icon {
+  font-size: 2.4rem;
+  line-height: 1;
+}
+
+.flow-step .step-title {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: #1a1a2e;
+  line-height: 1.3;
+}
+
+.flow-step .step-desc {
+  font-size: 0.75rem;
+  color: #888;
+  line-height: 1.6;
+}
+
+.flow-step .step-tag {
+  font-size: 0.65rem;
+  background: #f0f3f8;
+  color: #666;
+  border-radius: 20px;
+  padding: 3px 10px;
+  margin-top: 2px;
+}
+
+/* 색상별 상단 테두리 */
+.step-collect  { border-top: 4px solid #3fb950; }
+.step-analyze  { border-top: 4px solid #58a6ff; }
+.step-recommend{ border-top: 4px solid #f0a500; }
+.step-trade    { border-top: 4px solid #a371f7; }
+.step-report   { border-top: 4px solid #f85149; }
+
+/* 화살표 */
+.flow-arrow {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  color: #ccc;
+  font-size: 1.6rem;
+  flex-shrink: 0;
+}
+
+/* ── 안전장치 박스 ── */
+.safety-box {
+  background: #fff8ec;
+  border: 2px solid #f0a500;
+  border-radius: 16px;
+  padding: 24px 32px;
+  max-width: 1060px;
+  margin: 0 auto 48px;
+  display: flex;
+  gap: 32px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.safety-box .safety-title {
+  font-size: 1rem;
+  font-weight: 800;
+  color: #b45309;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.safety-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.safety-item .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f0a500;
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+.safety-item p {
+  font-size: 0.8rem;
+  color: #555;
+  line-height: 1.5;
+}
+.safety-item strong { color: #1a1a2e; }
+
+/* ── 주간 타임라인 ── */
+.timeline {
+  max-width: 1060px;
+  margin: 0 auto 48px;
+  display: flex;
+  gap: 0;
+  position: relative;
+}
+.timeline::before {
+  content: '';
+  position: absolute;
+  top: 36px;
+  left: 80px;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(to right, #3fb950, #58a6ff, #58a6ff, #58a6ff, #f85149, #f85149);
+  z-index: 0;
+}
+.tl-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+  z-index: 1;
+}
+.tl-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 2px currentColor;
+  background: currentColor;
+  margin-top: 27px;
+}
+.tl-day {
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: #999;
+  text-align: center;
+}
+.tl-time {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #1a1a2e;
+  text-align: center;
+}
+.tl-desc {
+  font-size: 0.68rem;
+  color: #777;
+  text-align: center;
+  line-height: 1.5;
+  max-width: 90px;
+}
+.tl-icon { font-size: 1.3rem; }
+
+/* ── 데이터 소스 ── */
+.sources {
+  max-width: 1060px;
+  margin: 0 auto 40px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.source-chip {
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 50px;
+  padding: 8px 18px;
+  font-size: 0.78rem;
+  color: #444;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+.source-chip .chip-icon { font-size: 1rem; }
+
+/* ── 운영 모드 ── */
+.modes {
+  max-width: 1060px;
+  margin: 0 auto 40px;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.mode-card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 20px 24px;
+  flex: 1;
+  min-width: 200px;
+  max-width: 240px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.07);
+  text-align: center;
+}
+.mode-card .micon { font-size: 1.8rem; margin-bottom: 8px; }
+.mode-card .mname { font-size: 0.9rem; font-weight: 800; margin-bottom: 6px; }
+.mode-card .mdesc { font-size: 0.72rem; color: #777; line-height: 1.6; }
+.mode-card .mbadge {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 0.65rem;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-weight: 700;
+}
+
+/* footer */
+footer {
+  text-align: center;
+  font-size: 0.7rem;
+  color: #bbb;
+  margin-top: 16px;
+}
+</style>
+</head>
+<body>
+
+<!-- 헤더 -->
+<div class="header">
+  <h1>🏏 내일은 <span>번트왕</span></h1>
+  <p>국내 주식 주간스윙 자동 추천 · 실행 플랫폼</p>
+</div>
+
+<!-- 한 줄 요약 -->
+<div class="banner">
+  <p>
+    월~금 매일 아침, <strong>AI가 국내 주식 500종목을 분석</strong>해 선별된 종목을 <strong>텔레그램으로 전송</strong>합니다.<br>
+    사용자는 <strong>버튼 하나</strong>로 매수하고, 금요일 장 마감 전 자동 알림을 받아 청산합니다.
+  </p>
+</div>
+
+<!-- 메인 플로우 -->
+<p class="section-title">서비스 흐름</p>
+<div class="flow-container">
+
+  <div class="flow-step step-collect">
+    <div class="num">1</div>
+    <div class="big-icon">📥</div>
+    <div class="step-title">데이터<br>자동 수집</div>
+    <div class="step-desc">주가·재무·뉴스<br>수급·커뮤니티<br>유튜브까지<br>매일 자동 수집</div>
+    <div class="step-tag">500종목 · 3년치</div>
+  </div>
+
+  <div class="flow-arrow">›</div>
+
+  <div class="flow-step step-analyze">
+    <div class="num">2</div>
+    <div class="big-icon">🧠</div>
+    <div class="step-title">AI<br>7각도 분석</div>
+    <div class="step-desc">기술·재무·수급<br>뉴스·분봉·커뮤<br>유튜브 관점에서<br>0~100점 채점</div>
+    <div class="step-tag">앙상블 스코어링</div>
+  </div>
+
+  <div class="flow-arrow">›</div>
+
+  <div class="flow-step step-recommend">
+    <div class="num">3</div>
+    <div class="big-icon">📲</div>
+    <div class="step-title">텔레그램으로<br>추천 발송</div>
+    <div class="step-desc">선별된 종목<br>목표가·손절가<br>근거 요약<br>평일 08:00 자동 발송</div>
+    <div class="step-tag">10분 내 결정</div>
+  </div>
+
+  <div class="flow-arrow">›</div>
+
+  <div class="flow-step step-trade">
+    <div class="num">4</div>
+    <div class="big-icon">🛒</div>
+    <div class="step-title">버튼 하나로<br>매수 실행</div>
+    <div class="step-desc">안전장치 통과 후<br>증권사 API로<br>자동 주문 체결<br>잔고 즉시 반영</div>
+    <div class="step-tag">KIS 증권사 연동</div>
+  </div>
+
+  <div class="flow-arrow">›</div>
+
+  <div class="flow-step step-report">
+    <div class="num">5</div>
+    <div class="big-icon">📊</div>
+    <div class="step-title">금요일<br>결과 정리</div>
+    <div class="step-desc">수익률·승률<br>놓친 종목 분석<br>매도 사유 기록<br>주간 회고 리포트</div>
+    <div class="step-tag">15:40 자동 발송</div>
+  </div>
+
+</div>
+
+<!-- 안전장치 -->
+<p class="section-title">자동 안전장치</p>
+<div class="safety-box">
+  <div>
+    <div class="safety-title">🛡️ 리스크 자동 차단</div>
+    <div class="safety-item"><div class="dot"></div><p><strong>투자금 상한 고정</strong> — 설정 금액을 초과하는 주문은 자동으로 거부됩니다.</p></div>
+    <div class="safety-item"><div class="dot"></div><p><strong>한 종목 집중 방지</strong> — 단일 종목에 전체 자금의 50% 이상 투입 불가</p></div>
+    <div class="safety-item"><div class="dot"></div><p><strong>연속 손실 시 중단</strong> — 연속으로 손실이 나면 추가 매수를 자동 차단</p></div>
+  </div>
+  <div>
+    <div class="safety-title">🔒 거래 확인 절차</div>
+    <div class="safety-item"><div class="dot"></div><p><strong>10분 유효 버튼</strong> — 추천 후 10분이 지나면 버튼이 만료되어 충동 매수 방지</p></div>
+    <div class="safety-item"><div class="dot"></div><p><strong>PIN 인증</strong> — 큰 금액(투자금의 30% 초과) 주문 시 6자리 PIN 추가 확인</p></div>
+    <div class="safety-item"><div class="dot"></div><p><strong>장 시간 외 차단</strong> — 09:00~15:30 이외 시간대 주문 자동 거부</p></div>
+  </div>
+  <div>
+    <div class="safety-title">📋 모든 거래 기록</div>
+    <div class="safety-item"><div class="dot"></div><p><strong>수정 불가 감사 로그</strong> — 모든 매수·매도 내역이 삭제·수정 불가 형태로 보관</p></div>
+    <div class="safety-item"><div class="dot"></div><p><strong>증권사 잔고 대조</strong> — 봇 기록과 실제 증권사 잔고를 매번 비교해 정합성 유지</p></div>
+  </div>
+</div>
+
+<!-- 주간 타임라인 -->
+<p class="section-title">주간 자동 스케줄</p>
+<div class="timeline">
+  <div class="tl-item">
+    <div class="tl-icon">🌙</div>
+    <div class="tl-dot" style="color:#3fb950"></div>
+    <div class="tl-day">일요일</div>
+    <div class="tl-time">23:00</div>
+    <div class="tl-desc">분석 대상<br>500종목<br>업데이트</div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-icon">📢</div>
+    <div class="tl-dot" style="color:#58a6ff"></div>
+    <div class="tl-day">평일</div>
+    <div class="tl-time">08:00</div>
+    <div class="tl-desc">추천 종목<br>텔레그램<br>자동 발송</div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-icon">👁️</div>
+    <div class="tl-dot" style="color:#58a6ff"></div>
+    <div class="tl-day">화~목</div>
+    <div class="tl-time">장중</div>
+    <div class="tl-desc">목표가·손절가<br>도달 시<br>즉시 알림</div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-icon">⚠️</div>
+    <div class="tl-dot" style="color:#f85149"></div>
+    <div class="tl-day">금요일</div>
+    <div class="tl-time">15:20</div>
+    <div class="tl-desc">미청산 종목<br>청산 요청<br>알림</div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-icon">📊</div>
+    <div class="tl-dot" style="color:#f85149"></div>
+    <div class="tl-day">금요일</div>
+    <div class="tl-time">15:40</div>
+    <div class="tl-desc">주간 결과<br>회고 리포트<br>자동 발송</div>
+  </div>
+</div>
+
+<!-- 데이터 소스 -->
+<p class="section-title">분석에 활용하는 데이터</p>
+<div class="sources">
+  <div class="source-chip"><span class="chip-icon">📈</span> 주가 (3년치 일봉)</div>
+  <div class="source-chip"><span class="chip-icon">💰</span> 재무제표 (PER · PBR · ROE)</div>
+  <div class="source-chip"><span class="chip-icon">🏢</span> 기관·외국인 매매 동향</div>
+  <div class="source-chip"><span class="chip-icon">📰</span> 네이버 금융 뉴스</div>
+  <div class="source-chip"><span class="chip-icon">💬</span> 종목 토론 커뮤니티</div>
+  <div class="source-chip"><span class="chip-icon">▶️</span> 주식 유튜브 채널</div>
+  <div class="source-chip"><span class="chip-icon">🕐</span> 장중 1분봉 실시간</div>
+</div>
+
+<!-- 운영 모드 -->
+<p class="section-title">투자 전략 모드</p>
+<div class="modes">
+  <div class="mode-card">
+    <div class="micon">🏏</div>
+    <div class="mname">번트 모드 (기본)</div>
+    <div class="mdesc">
+      안정적인 종목 중심<br>
+      목표 수익 <strong>+7%</strong><br>
+      손절 기준 <strong>-4%</strong><br>
+      재무 건전성 우선
+    </div>
+    <span class="mbadge" style="background:#e8f5e9;color:#2e7d32;">안정형</span>
+  </div>
+  <div class="mode-card">
+    <div class="micon">⚡</div>
+    <div class="mname">스퀴즈 모드</div>
+    <div class="mdesc">
+      거래량 급증 돌파 종목<br>
+      목표 수익 <strong>+12%</strong><br>
+      손절 기준 <strong>-5%</strong><br>
+      기술적 타이밍 우선
+    </div>
+    <span class="mbadge" style="background:#fce4ec;color:#c62828;">공격형</span>
+  </div>
+  <div class="mode-card">
+    <div class="micon">🧪</div>
+    <div class="mname">테스트 모드</div>
+    <div class="mdesc">
+      실제 돈 없이<br>가상 계좌로 연습<br>동일한 추천·분석<br>실전 전환 가능
+    </div>
+    <span class="mbadge" style="background:#e3f2fd;color:#1565c0;">모의투자</span>
+  </div>
+</div>
+
+<footer>내일은 번트왕 · 국내 주식 주간스윙 자동화 플랫폼</footer>
+
+</body>
+</html>
