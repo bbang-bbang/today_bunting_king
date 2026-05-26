@@ -910,6 +910,14 @@ async def job_price_monitor(ctx: ContextTypes.DEFAULT_TYPE):
                             f"  • 체결되면 자동 반영됨\n"
                             f"  • 봇은 같은 종목 추가 매도 시도 안 함"
                         )
+                    elif result.get("external_closed"):
+                        # KIS 잔고 0 + grace 경과 → 외부 매도 추정. DB 자동 정리 후 1회 알림.
+                        msg = (
+                            f"🧹 외부 매도 감지  —  {head}\n"
+                            f"\n"
+                            f"  KIS 잔고에 보유 없음 → DB 자동 정리\n"
+                            f"  실제 손익은 KIS 거래내역에서 확인하세요"
+                        )
                     else:
                         msg = (
                             f"⚠️ 자동매도 실패  [{head}]\n"

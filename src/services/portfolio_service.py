@@ -582,7 +582,29 @@ async def execute_sell(
                             return {"success": False, "reason": f"KIS 잔고 동기화 대기 중 ({code}) — 다음 사이클 재시도"}
                     except Exception:
                         pass
-                    return {"success": False, "reason": f"KIS 잔고에 {code} 없음 — DB 정합성 깨짐, reconcile 필요"}
+                    # grace 경과 + KIS 잔고 0 → 외부 매도된 ghost. DB auto-close 후 1회 알림.
+                    # pnl=NULL: 외부 체결가 미확인 (reconcile 스크립트의 ghost 처리와 동일 정책).
+                    now_iso = datetime.now().isoformat(timespec="seconds")
+                    log_event(chat_id, "external_sell_cleanup", {
+                        "code": code, "qty": qty, "buy_price": buy_price,
+                        "position_id": pid,
+                        "reason": "KIS 잔고 0 — 외부 매도 추정, DB 자동 정리",
+                    })
+                    conn2 = get_connection()
+                    try:
+                        conn2.execute(
+                            "UPDATE positions SET status='closed', pnl=NULL, closed_at=? "
+                            "WHERE id=? AND status='open'",
+                            (now_iso, pid),
+                        )
+                        conn2.commit()
+                    finally:
+                        conn2.close()
+                    return {
+                        "success": False, "external_closed": True,
+                        "code": code, "qty": qty,
+                        "reason": f"KIS 잔고에 {code} 없음 — 외부 매도로 간주, DB 정리 완료",
+                    }
                 if kis_qty < qty:
                     log.warning(
                         "[sell %s] DB qty=%d > KIS qty=%d → KIS 기준으로 매도",
