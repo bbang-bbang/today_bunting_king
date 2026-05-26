@@ -193,6 +193,24 @@ def step_fundamentals(
 
 def step_investor_flow(first_time: bool, end: str | None = None) -> StepResult:
     t = time.time()
+    # 1순위: naver 스크래핑. pykrx 투자자 매매 API 가 KRX 빈 응답으로 죽어(2026-04~)
+    # 시장전체·per-ticker 양쪽 다 0건 → naver frgn 페이지(순매매량→대금 환산)로 대체.
+    try:
+        from src.crawlers.fetch_investor_flow_naver import run_batch as _naver_batch
+        codes = _get_universe_codes()
+        if codes:
+            # page 1(≈20영업일)이면 FlowExpert 5일 lookback 충족. 동시 6스레드.
+            n = _naver_batch(codes, pages=1, concurrency=6)
+            if n > 0:
+                return StepResult(
+                    "투자자 수급 (naver)", True, time.time() - t,
+                    f"{n:,}건 / {len(codes)}종목",
+                )
+            log.warning("naver 수급 0건 — pykrx 로 fallback")
+    except Exception as e:
+        log.warning("naver 수급 수집 실패, pykrx 로 fallback: %s", e)
+
+    # fallback: pykrx (현재 환경에선 0건 예상이나 환경 복구 대비 유지)
     from datetime import date, timedelta
     ref = date.fromisoformat(end) if end else date.today()
     if first_time:
@@ -203,7 +221,7 @@ def step_investor_flow(first_time: bool, end: str | None = None) -> StepResult:
     else:
         args = ["--as-of", ref.isoformat()]
     ok, detail = _run_subprocess("src.crawlers.fetch_investor_flow", args)
-    return StepResult("투자자 수급", ok, time.time() - t, detail)
+    return StepResult("투자자 수급 (pykrx)", ok, time.time() - t, detail)
 
 
 # ============================================================

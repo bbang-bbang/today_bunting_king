@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import random
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 
 import httpx
@@ -34,12 +36,39 @@ def _parse_int(text: str) -> int:
     return int(cleaned)
 
 
+def _row_from_shares(
+    d: date, code: str, close: int,
+    institution_shares: int, foreign_shares: int, foreign_pct: float,
+) -> dict:
+    """네이버 순매매'량'(주) → 순매수'대금'(원) 환산.
+
+    네이버 frgn 페이지는 주식 수를 주지만, investor_flow.*_net 컬럼과
+    FlowExpert 임계값(20억/5억/1억원)은 모두 '원' 기준이므로 종가로 환산한다.
+    종가를 평균체결가 대용으로 쓰는 근사지만 자릿수·부호는 정합.
+    """
+    inst_amount = institution_shares * close
+    foreign_amount = foreign_shares * close
+    return {
+        "date": d,
+        "code": code,
+        "close": close,
+        "institution_net": inst_amount,
+        "foreign_net": foreign_amount,
+        "individual_net": -(inst_amount + foreign_amount),  # 잔차
+        "institution_shares": institution_shares,
+        "foreign_shares": foreign_shares,
+        "foreign_holding_pct": foreign_pct,
+    }
+
+
 def fetch_flow_page(code: str, page: int = 1) -> list[dict]:
     """네이버 금융 외국인/기관 순매매 페이지 파싱.
 
     Returns:
         [{'date': date, 'code': str, 'close': int,
-          'institution_net': int, 'foreign_net': int, 'foreign_holding_pct': float}]
+          'institution_net': int(원), 'foreign_net': int(원),
+          'institution_shares': int, 'foreign_shares': int,
+          'foreign_holding_pct': float}]
     """
     url = f"https://finance.naver.com/item/frgn.naver?code={code}&page={page}"
     try:
@@ -68,22 +97,16 @@ def fetch_flow_page(code: str, page: int = 1) -> list[dict]:
         try:
             d = date.fromisoformat(date_text.replace(".", "-"))
             close = _parse_int(tds[1].get_text(strip=True))
-            institution_net = _parse_int(tds[5].get_text(strip=True))
-            foreign_net = _parse_int(tds[6].get_text(strip=True))
+            institution_shares = _parse_int(tds[5].get_text(strip=True))
+            foreign_shares = _parse_int(tds[6].get_text(strip=True))
             foreign_pct_text = tds[8].get_text(strip=True).replace("%", "")
             foreign_pct = float(foreign_pct_text) if foreign_pct_text else 0.0
         except (ValueError, IndexError):
             continue
 
-        rows_out.append({
-            "date": d,
-            "code": code,
-            "close": close,
-            "institution_net": institution_net,
-            "foreign_net": foreign_net,
-            "individual_net": -(institution_net + foreign_net),  # 잔차
-            "foreign_holding_pct": foreign_pct,
-        })
+        rows_out.append(_row_from_shares(
+            d, code, close, institution_shares, foreign_shares, foreign_pct,
+        ))
 
     return rows_out
 
@@ -136,18 +159,43 @@ def run(code: str, pages: int = 3) -> int:
     return save_flow(rows)
 
 
-def run_batch(codes: list[str], pages: int = 3) -> int:
-    """여러 종목 일괄 수집."""
-    total = 0
-    for code in codes:
-        try:
-            n = run(code, pages)
-            log.info("[%s] 수급 %d건 저장", code, n)
-            total += n
-        except Exception as e:
-            log.warning("[%s] 수급 수집 실패: %s", code, e)
-        time.sleep(0.5)
-    return total
+def _fetch_one(code: str, pages: int) -> list[dict]:
+    # 동시 실행 시 초기 버스트를 분산해 네이버 차단 회피
+    time.sleep(random.uniform(0, 0.4))
+    return fetch_flow_multi_page(code, pages)
+
+
+def run_batch(codes: list[str], pages: int = 3, concurrency: int = 1) -> int:
+    """여러 종목 일괄 수집. concurrency>1 이면 동시 수집 후 일괄 저장(sqlite 쓰기 경합 회피)."""
+    if concurrency <= 1:
+        total = 0
+        for code in codes:
+            try:
+                n = run(code, pages)
+                log.info("[%s] 수급 %d건 저장", code, n)
+                total += n
+            except Exception as e:
+                log.warning("[%s] 수급 수집 실패: %s", code, e)
+            time.sleep(0.5)
+        return total
+
+    init_schema()
+    all_rows: list[dict] = []
+    ok = 0
+    with ThreadPoolExecutor(max_workers=concurrency) as ex:
+        futs = {ex.submit(_fetch_one, code, pages): code for code in codes}
+        for fut in as_completed(futs):
+            code = futs[fut]
+            try:
+                rows = fut.result()
+                if rows:
+                    all_rows.extend(rows)
+                    ok += 1
+            except Exception as e:
+                log.warning("[%s] 수급 수집 실패: %s", code, e)
+    saved = save_flow(all_rows)
+    log.info("naver 수급 동시수집: %d/%d 종목 성공, %d건 저장", ok, len(codes), saved)
+    return saved
 
 
 def _get_top_codes(n: int) -> list[str]:
@@ -170,6 +218,7 @@ def main() -> None:
     g.add_argument("--codes", type=str, help="쉼표 구분 종목코드")
     g.add_argument("--top", type=int, help="시총 상위 N종목")
     p.add_argument("--pages", type=int, default=3, help="페이지 수 (1페이지 ≈ 10영업일)")
+    p.add_argument("--concurrency", type=int, default=1, help="동시 수집 스레드 수")
     args = p.parse_args()
 
     if args.top:
@@ -178,7 +227,7 @@ def main() -> None:
     else:
         codes = [c.strip() for c in args.codes.split(",")]
 
-    total = run_batch(codes, args.pages)
+    total = run_batch(codes, args.pages, concurrency=args.concurrency)
     print(f"수급 수집 완료: {total:,}건")
 
 
