@@ -44,6 +44,10 @@ def recommend(
     from src.db.connection import get_connection
     from src.risk.guard import SWING_MODE_PARAMS, StrategyMode
 
+    # 입력 코드 중복 제거 (순서 보존). fundamentals_snapshot 시계열로 같은 종목이
+    # 여러 번 주입되면 top_n 이 동일 종목 복제본으로 채워지는 사고 방지(2026-05).
+    codes = list(dict.fromkeys(codes))
+
     mode_enum = StrategyMode(mode)
     params = SWING_MODE_PARAMS[mode_enum]   # 국내 주식 = 주간스윙 파라미터
     per_cap = active_seed_krw * PER_POSITION_CAP_PCT // 100
@@ -54,7 +58,7 @@ def recommend(
         try:
             placeholders = ",".join("?" for _ in codes)
             rows = conn.execute(
-                f"""SELECT code FROM fundamentals_snapshot
+                f"""SELECT DISTINCT code FROM fundamentals_snapshot
                     WHERE code IN ({placeholders})
                       AND market_cap >= ?""",
                 (*codes, min_market_cap),

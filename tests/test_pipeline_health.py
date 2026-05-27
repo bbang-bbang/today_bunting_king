@@ -57,13 +57,14 @@ def _seed_green(today: date, prev: date) -> None:
         conn.execute(
             "INSERT INTO bot_users (chat_id,status,registered_at) VALUES (999,'approved','t')"
         )
-        conn.execute(
+        # 고유 종목 3개 이상 (다양성 검사 통과)
+        conn.executemany(
             "INSERT INTO recommendations "
             "(rec_id,chat_id,session_date,market,code,name,strategy_mode,"
             " entry_price,target_price,stop_price,expected_return_pct,ensemble_score,"
             " reason_summary,reason_json,sent_at) "
-            "VALUES ('r1',999,?,'KR','000000','N','bunt',1,1,1,1.0,1.0,'','{}',?)",
-            (today.isoformat(), today.isoformat()),
+            "VALUES (?,999,?,'KR',?,'N','bunt',1,1,1,1.0,1.0,'','{}',?)",
+            [(f"rec{i}", today.isoformat(), f"{i:06d}", today.isoformat()) for i in range(4)],
         )
         conn.commit()
     finally:
@@ -163,6 +164,31 @@ def test_flags_no_recommendations(temp_db):
         conn.close()
     checks = _as_dict(scheduler._check_pipeline_health())
     assert checks["추천발송"][0] is False
+
+
+def test_flags_low_recommendation_diversity(temp_db):
+    """추천 건수는 많아도 전부 같은 종목(1종목 복제 붕괴) → RED.
+    2026-05 recommender 중복 버그가 이 검사로 잡혀야 함."""
+    today = date.today()
+    prev = scheduler._prev_trading_day(today)
+    _seed_green(today, prev)
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM recommendations")
+        # 20건이지만 전부 동일 종목 000000 (실제 사고 재현)
+        conn.executemany(
+            "INSERT INTO recommendations "
+            "(rec_id,chat_id,session_date,market,code,name,strategy_mode,"
+            " entry_price,target_price,stop_price,expected_return_pct,ensemble_score,"
+            " reason_summary,reason_json,sent_at) "
+            "VALUES (?,999,?,'KR','000000','N','bunt',1,1,1,1.0,1.0,'','{}',?)",
+            [(f"dup{i}", today.isoformat(), today.isoformat()) for i in range(20)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    checks = _as_dict(scheduler._check_pipeline_health())
+    assert checks["추천발송"][0] is False   # 20건이어도 고유 1종목 → RED
 
 
 # ============================================================

@@ -1081,6 +1081,13 @@ async def job_pending_rec_monitor(ctx: ContextTypes.DEFAULT_TYPE):
             if not alerts:
                 continue
 
+            # (code, mode) 중복 제거 — 중복 추천 rec_id 로 같은 종목·모드 알림이
+            # 반복돼 한 메시지에 같은 줄이 여러 번 찍히고 "종목당 1번" 문구와 모순되던 사고 방지.
+            _dedup: dict[tuple, object] = {}
+            for a in alerts:
+                _dedup.setdefault((a.code, a.strategy_mode), a)
+            alerts = list(_dedup.values())
+
             # code 별로 그룹화 — 같은 종목 양 모드 도달 시 통합
             by_code: dict[str, list] = {}
             for a in alerts:
@@ -1777,6 +1784,7 @@ _HEALTH_MIN_INSTRUMENTS = 2000
 _HEALTH_MIN_UNIVERSE = 400
 _HEALTH_MIN_FLOW_CODES = 400
 _HEALTH_MIN_FUNDAMENTALS = 400
+_HEALTH_MIN_REC_DISTINCT = 3      # 오늘 추천 고유 종목수 하한 (1종목 복제 붕괴 포착)
 _HEALTH_INSTRUMENT_STALE_DAYS = 2     # instruments.updated_at 허용 경과(달력일)
 _HEALTH_FUND_STALE_DAYS = 7           # fundamentals_snapshot 허용 경과(달력일)
 _HEALTH_DATA_STALE_TRADING_DAYS = 1   # ohlcv/flow: 직전거래일에서 추가 허용 거래일(공급자 지연 관용)
@@ -1838,11 +1846,16 @@ def _check_pipeline_health():
         nu = conn.execute("SELECT COUNT(*) FROM analysis_universe").fetchone()[0]
         out.append(("유니버스", nu >= _HEALTH_MIN_UNIVERSE, f"{nu}종목"))
 
-        # 6) 오늘 추천 발송
+        # 6) 오늘 추천 발송 — 건수 + 고유 종목수(1종목 복제 붕괴 포착)
         nr = conn.execute(
             "SELECT COUNT(*) FROM recommendations WHERE session_date=?", (today.isoformat(),)
         ).fetchone()[0]
-        out.append(("추천발송", nr > 0, f"오늘 {nr}건"))
+        ndc = conn.execute(
+            "SELECT COUNT(DISTINCT code) FROM recommendations WHERE session_date=?",
+            (today.isoformat(),),
+        ).fetchone()[0]
+        out.append(("추천발송", nr > 0 and ndc >= _HEALTH_MIN_REC_DISTINCT,
+                    f"오늘 {nr}건 · 고유 {ndc}종목"))
     finally:
         conn.close()
     return out
