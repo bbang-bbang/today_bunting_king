@@ -405,9 +405,11 @@ class KISBrokerAdapter(BrokerAdapter):
             ord_dvsn = "00"  # 지정가
             ord_unpr = str(aligned)
 
-        # 매수 직전 보유량 캐시 — 체결 확인 fallback 용. 실패해도 진행.
+        # 매수/매도 직전 보유량 캐시 — 체결 확인 fallback 용. 실패해도 진행.
+        # 매도도 캐시: KIS 모의투자 daily-ccld 가 매도 체결을 안 잡아 매도가 pending 좀비로
+        # 남던 사고(2026-05, 21/21) 대응 — 잔고 감소로 체결 확인(매수와 대칭).
         pre_qty: int | None = None
-        if req.side == "buy":
+        if req.side in ("buy", "sell"):
             pre_qty = await self._get_position_quantity(req.code)
 
         body = {
@@ -571,6 +573,29 @@ class KISBrokerAdapter(BrokerAdapter):
                         filled_avg_price=fill_price,
                         commission=notional * 15 // 100_000,
                         tax=0,
+                        raw=data,
+                    )
+
+            # Fallback — 매도면 잔고 '감소' 로 체결 확인 (매수와 대칭).
+            # KIS 모의투자 daily-ccld 가 매도 체결을 안 잡아 자동매도 21/21 이 pending 좀비가 되고
+            # 손절이 실제로 안 나가 포지션이 묶여 출혈하던 사고(2026-05) 직접 해결.
+            if req.side == "sell" and pre_qty is not None:
+                post_qty = await self._get_position_quantity(req.code)
+                if post_qty is not None and post_qty < pre_qty:
+                    delta = pre_qty - post_qty
+                    fill_price = req.price if req.price else 0
+                    log.info(
+                        "[sell %s] 잔고 fallback 체결 확인: -%d주 (pre=%d → post=%d, ODNO=%s)",
+                        req.code, delta, pre_qty, post_qty, broker_order_id,
+                    )
+                    notional = fill_price * delta if fill_price else 0
+                    return OrderResponse(
+                        broker_order_id=broker_order_id,
+                        status="filled",
+                        filled_quantity=delta,
+                        filled_avg_price=fill_price,
+                        commission=notional * 15 // 100_000,
+                        tax=notional * 20 // 100_000,   # 매도 거래세 0.2%
                         raw=data,
                     )
 

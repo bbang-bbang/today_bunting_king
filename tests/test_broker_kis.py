@@ -341,6 +341,123 @@ def test_submit_sell_limit_order(env_keys, monkeypatch):
     assert order_call.headers["tr_id"] == "VTTC0801U"
 
 
+def test_submit_sell_balance_fallback_confirms_fill(env_keys, monkeypatch):
+    """KIS 모의투자 daily-ccld 가 매도 체결을 안 잡아(빈 응답) 'pending' 이어도,
+    주문 후 잔고가 감소했으면 체결로 확정 → filled.
+
+    2026-05 사고 회귀 방지: 매수엔 있던 잔고 fallback 이 매도엔 없어 자동매도 21/21 이
+    pending 좀비가 되고 손절이 실제로 안 나가 포지션이 묶여 출혈했음.
+    """
+    bal_calls = {"n": 0}
+
+    def _bal(qty):
+        return {
+            "rt_cd": "0", "msg1": "정상",
+            "output1": ([{
+                "pdno": "005930", "prdt_name": "삼성전자", "hldg_qty": str(qty),
+                "pchs_avg_pric": "75000", "prpr": "74000", "evlu_amt": "0",
+                "evlu_pfls_amt": "0", "evlu_pfls_rt": "0",
+            }] if qty > 0 else []),
+            "output2": [{
+                "tot_evlu_amt": "0", "pchs_amt_smtl_amt": "0",
+                "evlu_pfls_smtl_amt": "0", "prvs_rcdl_excc_amt": "1000000",
+            }],
+        }
+
+    @dataclass
+    class _SellFallbackClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): return False
+
+        async def post(self, url, *, json=None, headers=None):
+            if "/uapi/hashkey" in url:
+                return _FakeResponse({"HASH": "HK"})
+            if "/oauth2/tokenP" in url:
+                return _FakeResponse({"access_token": "T", "expires_in": 3600})
+            if "/uapi/domestic-stock/v1/trading/order-cash" in url:
+                return _FakeResponse({
+                    "rt_cd": "0",
+                    "output": {"KRX_FWDG_ORD_ORGNO": "00950", "ODNO": "0000077777"},
+                })
+            raise AssertionError(f"unexpected POST: {url}")
+
+        async def get(self, url, *, headers=None, params=None):
+            if "inquire-daily-ccld" in url:
+                return _FakeResponse({"rt_cd": "0", "output1": []})   # 매도 미보고(pending)
+            if "inquire-balance" in url:
+                bal_calls["n"] += 1
+                # 1st(pre)=3주 보유, 2nd(post)=0주 → 잔고 감소 = 체결
+                return _FakeResponse(_bal(3 if bal_calls["n"] == 1 else 0))
+            raise AssertionError(f"unexpected GET: {url}")
+
+    monkeypatch.setattr("src.adapters.broker_kis.httpx.AsyncClient", lambda *a, **kw: _SellFallbackClient())
+    async def _no_sleep(_):
+        return None
+    monkeypatch.setattr("src.adapters.broker_kis.asyncio.sleep", _no_sleep)
+
+    ad = KISBrokerAdapter(config.TradeMode.KIS_MOCK)
+    res = asyncio.run(ad.submit_order(
+        OrderRequest(side="sell", code="005930", quantity=3, price=75_000)
+    ))
+    assert res.status == "filled", f"잔고 감소로 체결 확정돼야 함: {res}"
+    assert res.filled_quantity == 3
+    assert res.filled_avg_price == 75_000
+    assert res.tax == 3 * 75_000 * 20 // 100_000   # 매도 거래세 0.2%
+
+
+def test_submit_sell_balance_fallback_no_change_stays_pending(env_keys, monkeypatch):
+    """주문 후 잔고가 그대로면(좀비 — 체결 안 됨) pending 유지 → price_monitor 가 재시도 가능."""
+    def _bal3():
+        return {
+            "rt_cd": "0", "msg1": "정상",
+            "output1": [{
+                "pdno": "005930", "prdt_name": "삼성전자", "hldg_qty": "3",
+                "pchs_avg_pric": "75000", "prpr": "74000", "evlu_amt": "0",
+                "evlu_pfls_amt": "0", "evlu_pfls_rt": "0",
+            }],
+            "output2": [{
+                "tot_evlu_amt": "0", "pchs_amt_smtl_amt": "0",
+                "evlu_pfls_smtl_amt": "0", "prvs_rcdl_excc_amt": "1000000",
+            }],
+        }
+
+    @dataclass
+    class _NoFillClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_a): return False
+
+        async def post(self, url, *, json=None, headers=None):
+            if "/uapi/hashkey" in url:
+                return _FakeResponse({"HASH": "HK"})
+            if "/oauth2/tokenP" in url:
+                return _FakeResponse({"access_token": "T", "expires_in": 3600})
+            if "/uapi/domestic-stock/v1/trading/order-cash" in url:
+                return _FakeResponse({
+                    "rt_cd": "0",
+                    "output": {"KRX_FWDG_ORD_ORGNO": "00950", "ODNO": "0000077778"},
+                })
+            raise AssertionError(f"unexpected POST: {url}")
+
+        async def get(self, url, *, headers=None, params=None):
+            if "inquire-daily-ccld" in url:
+                return _FakeResponse({"rt_cd": "0", "output1": []})
+            if "inquire-balance" in url:
+                return _FakeResponse(_bal3())   # pre·post 모두 3주 (변화 없음)
+            raise AssertionError(f"unexpected GET: {url}")
+
+    monkeypatch.setattr("src.adapters.broker_kis.httpx.AsyncClient", lambda *a, **kw: _NoFillClient())
+    async def _no_sleep(_):
+        return None
+    monkeypatch.setattr("src.adapters.broker_kis.asyncio.sleep", _no_sleep)
+
+    ad = KISBrokerAdapter(config.TradeMode.KIS_MOCK)
+    res = asyncio.run(ad.submit_order(
+        OrderRequest(side="sell", code="005930", quantity=3, price=75_000)
+    ))
+    assert res.status == "pending", f"잔고 변화 없으면 pending 유지: {res}"
+    assert "0000077778" in res.broker_order_id
+
+
 def test_submit_order_retries_on_5xx_then_succeeds(env_keys, monkeypatch):
     """KIS 5xx 발생 시 백오프 재시도 후 성공 — KIS_MOCK 서버 일시 장애 흡수."""
     # order-cash 호출 카운트별 응답 시퀀스 (1차 500, 2차 500, 3차 200)
