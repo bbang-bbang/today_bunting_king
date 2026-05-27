@@ -1435,6 +1435,167 @@ async def job_buy_partial_recheck(ctx: ContextTypes.DEFAULT_TYPE):
             log.exception("buy_partial_recheck 알림 실패: chat=%s", chat_id)
 
 
+# ── 매도 phantom 탈출 (잔고=진실) ──────────────────────────
+# KIS 모의투자가 marketable 매도도 영영 pending 으로 응답하는 phantom 대응(2026-05, 005940 등).
+# daily-ccld 신호 대신 잔고로 강제 해소: 잔고0→청산, 잔고보유→취소+시장가 재집행(상한).
+_SELL_PHANTOM_ESCALATE_SEC = 5 * 60   # pending 매도 5분 경과 시 강제 해소(기존 30분 단축)
+_SELL_PHANTOM_MAX_RETRY = 2           # 시장가 재집행 최대 횟수 → 초과 시 관리자 수동
+
+
+def _count_phantom_escalations_today(code: str) -> int:
+    import json as _j
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT payload_json FROM audit_log
+               WHERE event_type='sell_phantom_escalated'
+                 AND date(ts)=date('now','+9 hours')"""
+        ).fetchall()
+    finally:
+        conn.close()
+    n = 0
+    for r in rows:
+        try:
+            if _j.loads(r[0] or "{}").get("code") == code:
+                n += 1
+        except Exception:
+            continue
+    return n
+
+
+async def _escape_phantom_sell(ctx, adapter, *, bo_id, code, qty, broker_order_id,
+                               chat_id, position_id, buy_price) -> bool:
+    """pending 매도를 잔고(=진실)로 강제 해소. 액션했으면 True, 미처리(잔고 조회 실패)면 False.
+
+    잔고 0  → 이미 빠짐(체결 미보고/외부) → 포지션 청산(pnl=NULL).
+    잔고 보유 → 미체결 phantom → 기존 주문 취소 + 시장가 재집행(상한 후 관리자 알림, 이중매도 방지).
+    """
+    from src.adapters.broker_base import OrderRequest
+    try:
+        bal = await adapter.get_balance()
+    except Exception as e:
+        log.warning("[phantom_sell %s] 잔고 조회 실패: %s", broker_order_id, e)
+        return False
+    pos = next((p for p in bal.get("positions", []) if p.get("code") == code), None)
+    held = pos.get("quantity", 0) if pos else 0
+    cur_price = (pos.get("current_price") if pos else 0) or 0
+    now_iso = datetime.now().isoformat(timespec="seconds")
+
+    # --- 잔고 0: 이미 빠짐 → 청산 ---
+    if held <= 0:
+        try:
+            await adapter.cancel_order(broker_order_id)
+        except Exception:
+            pass
+        conn = get_connection()
+        try:
+            conn.execute("UPDATE broker_orders SET status='cancelled', updated_at=? WHERE id=?",
+                         (now_iso, bo_id))
+            conn.execute(
+                "UPDATE positions SET sell_order_id=NULL, status='closed', pnl=NULL, closed_at=? "
+                "WHERE id=? AND status='open'",
+                (now_iso, position_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        audit_service.log_event(chat_id, "sell_phantom_closed", {
+            "code": code, "broker_order_id": broker_order_id, "qty": qty,
+        })
+        log.info("[phantom_sell %s] 잔고 0 → 포지션 %s 청산", broker_order_id, position_id)
+        if chat_id:
+            try:
+                await ctx.bot.send_message(
+                    chat_id,
+                    f"🧹 매도 정리 — {code}\n  KIS 잔고 0 (체결/외부) → DB 청산\n  실손익은 KIS 거래내역 확인",
+                )
+            except Exception:
+                pass
+        return True
+
+    # --- 잔고 보유: 미체결 phantom → 시장가 재집행 (상한) ---
+    attempts = _count_phantom_escalations_today(code)
+    if attempts >= _SELL_PHANTOM_MAX_RETRY:
+        if config.TELEGRAM_ADMIN_CHAT_ID:
+            try:
+                await ctx.bot.send_message(
+                    config.TELEGRAM_ADMIN_CHAT_ID,
+                    f"🚨 매도 phantom 재집행 한도({_SELL_PHANTOM_MAX_RETRY}) 초과 — {code} {held}주\n"
+                    f"  자동 시장가 재집행 모두 미체결. 수동 매도 필요.",
+                )
+            except Exception:
+                pass
+        log.warning("[phantom_sell %s] 재집행 한도 초과(%d) — 수동 개입 대기", broker_order_id, attempts)
+        return True   # churn 방지: 더는 자동 재집행 안 함
+
+    # 기존 phantom 주문 취소 + 마킹 해제
+    try:
+        await adapter.cancel_order(broker_order_id)
+    except Exception:
+        pass
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE broker_orders SET status='cancelled', updated_at=? WHERE id=?",
+                     (now_iso, bo_id))
+        conn.execute("UPDATE positions SET sell_order_id=NULL WHERE sell_order_id=?", (bo_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    # 시장가 재발주 (체결 강제). 시장가 체결가 미보고(avg=0) → 현재가로 추정.
+    sell_qty = min(held, qty)
+    res = await adapter.submit_order(OrderRequest(side="sell", code=code, quantity=sell_qty, price=None))
+    fill_price = res.filled_avg_price or cur_price or 0
+    audit_id = audit_service.log_event(chat_id, "sell_phantom_escalated", {
+        "code": code, "old_odno": broker_order_id, "new_odno": res.broker_order_id,
+        "status": res.status, "qty": sell_qty, "attempt": attempts + 1,
+    })
+    log.info("[phantom_sell %s] 시장가 재집행 (%d/%d) → %s",
+             broker_order_id, attempts + 1, _SELL_PHANTOM_MAX_RETRY, res.status)
+
+    new_status = res.status if res.status in ("filled", "partial", "pending") else "failed"
+    net_pnl = None
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            """INSERT INTO broker_orders
+               (audit_id, trade_mode, side, code, quantity, price, broker_order_id,
+                status, filled_quantity, filled_avg_price, commission, tax, created_at, updated_at)
+               VALUES (?, ?, 'sell', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (audit_id, config.TRADE_MODE.value, code, sell_qty, fill_price or 0,
+             res.broker_order_id or "", new_status, res.filled_quantity or 0, fill_price or 0,
+             res.commission or 0, res.tax or 0, now_iso, now_iso),
+        )
+        new_bo_id = cur.lastrowid
+        if res.status in ("filled", "partial"):
+            fq = res.filled_quantity or sell_qty
+            net_pnl = (fill_price - (buy_price or 0)) * fq if fill_price else None
+            conn.execute(
+                "UPDATE positions SET sell_order_id=?, status='closed', pnl=?, closed_at=? "
+                "WHERE id=? AND status='open'",
+                (new_bo_id, net_pnl, now_iso, position_id),
+            )
+        elif res.status == "pending":
+            # 다음 사이클 재평가(상한까지). sell_order_id 마킹으로 price_monitor 중복 방지.
+            conn.execute("UPDATE positions SET sell_order_id=? WHERE id=? AND status='open'",
+                         (new_bo_id, position_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    if res.status in ("filled", "partial") and chat_id:
+        try:
+            await ctx.bot.send_message(
+                chat_id,
+                f"🛑 자동손절 재집행 완료 (시장가) — {code}\n"
+                f"  {res.filled_quantity or sell_qty}주 @ ~{fill_price:,}원"
+                + (f"\n  순손익 {net_pnl:+,}원" if net_pnl is not None else "\n  (체결가 추정)"),
+            )
+        except Exception:
+            pass
+    return True
+
+
 async def job_pending_sell_polling(ctx: ContextTypes.DEFAULT_TYPE):
     """월~금 09:00~15:30 매 1분 — 매도 pending 체결 확인 + 좀비 자동 정리.
 
@@ -1579,6 +1740,20 @@ async def job_pending_sell_polling(ctx: ContextTypes.DEFAULT_TYPE):
         except Exception:
             continue
         age_sec = (datetime.now() - created).total_seconds()
+
+        # ===== phantom 탈출 (잔고=진실) — pending 5분 경과 시 강제 해소 =====
+        # daily-ccld 가 marketable 매도도 영영 pending 으로 응답하는 phantom 대응.
+        # 해소(액션)하면 이번 사이클 종료. 미해소(잔고 조회 실패)면 아래 기존 분기로 fallback.
+        if age_sec >= _SELL_PHANTOM_ESCALATE_SEC and position_id and broker_order_id:
+            try:
+                if await _escape_phantom_sell(
+                    ctx, adapter, bo_id=bo_id, code=code, qty=qty,
+                    broker_order_id=broker_order_id, chat_id=chat_id,
+                    position_id=position_id, buy_price=buy_price,
+                ):
+                    continue
+            except Exception:
+                log.exception("[phantom_sell %s] 해소 중 오류", broker_order_id)
 
         # 10분~30분 사이: 사용자 1회 알림 (좀비 판정 전 단계)
         if 10 * 60 <= age_sec < 30 * 60 and broker_order_id not in alerted_orders:
