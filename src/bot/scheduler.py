@@ -2192,17 +2192,18 @@ async def job_eod_sell_reminder(ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def job_collect_daily_data(ctx: ContextTypes.DEFAULT_TYPE):
-    """금 16:00 KST — 장마감 후 일일 데이터 증분 수집.
+    """월~금 16:00 KST — 장마감 후 *매일* 데이터 증분 수집 (per-code 포함).
 
     수집 순서: 종목 마스터 → OHLCV → 재무 → 수급 → 유니버스 재빌드 → 뉴스/커뮤/유튜브.
-    일요일 23:00 유니버스 재빌드 전에 완료되어야 하므로 금요일 장마감 직후 실행.
+    morning_data_refresh(07:30) 는 속도 위해 per-code 를 skip 하므로, 뉴스/커뮤/유튜브
+    soft 시그널은 이 16:00 잡이 매일 수집해야 함. (2026-05: weekday()!=4 가드로 금요일만
+    돌던 회귀 → 뉴스/커뮤/유튜브가 4/27 이후 방치됨. 거래일 가드만 남기고 daily 복원.)
     각 단계 실패 시 continue_on_error=True 로 다음 단계 계속 진행.
     """
     import asyncio
-    from datetime import date as _date
     from src.crawlers.collect_all import run_pipeline
 
-    if _date.today().weekday() != 4 or not is_kr_trading_day():  # 금요일이자 거래일만 실행
+    if not is_kr_trading_day():  # 거래일(월~금, 공휴일 제외)만 — 등록 스케줄도 days=(0~4)
         return
 
     log.info("collect_daily_data: 장마감 후 증분 수집 시작")
