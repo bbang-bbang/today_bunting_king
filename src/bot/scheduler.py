@@ -1770,6 +1770,120 @@ async def job_kis_health_check(ctx: ContextTypes.DEFAULT_TYPE):
         log.exception("kis_health_alert 발송 실패")
 
 
+# ── 파이프라인 헬스 체크 (평일 08:05) ────────────────────────
+# silent 데이터 실패(StepResult ok=True 인데 0건/stale)를 DB 독립 검증으로 잡는다.
+# 2026-05: 종목마스터 3주 0건, 수급 4주 정지가 모두 우연히(로그 육안) 발견됨 → 자동 감지.
+_HEALTH_MIN_INSTRUMENTS = 2000
+_HEALTH_MIN_UNIVERSE = 400
+_HEALTH_MIN_FLOW_CODES = 400
+_HEALTH_MIN_FUNDAMENTALS = 400
+_HEALTH_INSTRUMENT_STALE_DAYS = 2     # instruments.updated_at 허용 경과(달력일)
+_HEALTH_FUND_STALE_DAYS = 7           # fundamentals_snapshot 허용 경과(달력일)
+_HEALTH_DATA_STALE_TRADING_DAYS = 1   # ohlcv/flow: 직전거래일에서 추가 허용 거래일(공급자 지연 관용)
+
+
+def _prev_trading_day(d):
+    """d 직전(미포함) 가장 최근 거래일."""
+    from datetime import timedelta
+    x = d - timedelta(days=1)
+    for _ in range(15):
+        if _is_trading_day_cached(x.isoformat()):
+            return x
+        x -= timedelta(days=1)
+    return d - timedelta(days=1)
+
+
+def _check_pipeline_health():
+    """아침 파이프라인 산출물 신선도 독립 검증 → [(이름, ok, detail)].
+
+    장 시작 전(08:05)이라 ohlcv/flow 의 기대 최신값은 '직전 거래일'.
+    instruments/추천은 당일 갱신 기대. StepResult 를 신뢰하지 않고 DB 를 직접 본다.
+    """
+    from datetime import date, timedelta
+    today = date.today()
+    floor_td = _prev_trading_day(today)
+    for _ in range(_HEALTH_DATA_STALE_TRADING_DAYS):
+        floor_td = _prev_trading_day(floor_td)
+    floor = floor_td.isoformat()
+    inst_floor = (today - timedelta(days=_HEALTH_INSTRUMENT_STALE_DAYS)).isoformat()
+    fund_floor = (today - timedelta(days=_HEALTH_FUND_STALE_DAYS)).isoformat()
+    out: list[tuple[str, bool, str]] = []
+    conn = get_connection()
+    try:
+        # 1) 종목마스터 — upsert 라 count 는 안 줄고 updated_at 신선도가 진짜 신호
+        n = conn.execute("SELECT COUNT(*) FROM instruments").fetchone()[0]
+        upd = (conn.execute("SELECT MAX(updated_at) FROM instruments").fetchone()[0] or "")[:10]
+        out.append(("종목마스터", n >= _HEALTH_MIN_INSTRUMENTS and upd >= inst_floor,
+                    f"{n}종목 · 갱신 {upd or '?'}"))
+
+        # 2) OHLCV — 직전 거래일 봉
+        mx = conn.execute("SELECT MAX(date) FROM ohlcv_daily").fetchone()[0]
+        out.append(("OHLCV", bool(mx) and mx >= floor, f"최신봉 {mx or '?'} (기대 ≥{floor})"))
+
+        # 3) 재무
+        nf = conn.execute("SELECT COUNT(*) FROM fundamentals_snapshot").fetchone()[0]
+        mxf = conn.execute("SELECT MAX(snapshot_date) FROM fundamentals_snapshot").fetchone()[0]
+        out.append(("재무", nf >= _HEALTH_MIN_FUNDAMENTALS and bool(mxf) and mxf >= fund_floor,
+                    f"{nf}건 · 최신 {mxf or '?'}"))
+
+        # 4) 수급 — 직전 거래일 & 충분한 종목수(10종목으로 붕괴했던 실패 즉시 포착)
+        mxi = conn.execute("SELECT MAX(date) FROM investor_flow").fetchone()[0]
+        codes = (conn.execute(
+            "SELECT COUNT(DISTINCT code) FROM investor_flow WHERE date=?", (mxi,)
+        ).fetchone()[0] if mxi else 0)
+        out.append(("수급", bool(mxi) and mxi >= floor and codes >= _HEALTH_MIN_FLOW_CODES,
+                    f"최신 {mxi or '?'} · {codes}종목 (기대 ≥{floor}, ≥{_HEALTH_MIN_FLOW_CODES})"))
+
+        # 5) 분석 유니버스 (1종목으로 붕괴했던 5/7 사고 포착)
+        nu = conn.execute("SELECT COUNT(*) FROM analysis_universe").fetchone()[0]
+        out.append(("유니버스", nu >= _HEALTH_MIN_UNIVERSE, f"{nu}종목"))
+
+        # 6) 오늘 추천 발송
+        nr = conn.execute(
+            "SELECT COUNT(*) FROM recommendations WHERE session_date=?", (today.isoformat(),)
+        ).fetchone()[0]
+        out.append(("추천발송", nr > 0, f"오늘 {nr}건"))
+    finally:
+        conn.close()
+    return out
+
+
+async def job_pipeline_health_check(ctx: ContextTypes.DEFAULT_TYPE):
+    """평일 08:05 KST — 아침 파이프라인이 신선한 데이터를 만들었는지 독립 검증.
+
+    RED 가 하나라도 있으면 관리자에게만 1회 경보 (전체 green 이면 무알림).
+    """
+    if not is_kr_trading_day():
+        return
+    if not config.TELEGRAM_ADMIN_CHAT_ID:
+        return
+    try:
+        checks = _check_pipeline_health()
+    except Exception:
+        log.exception("pipeline_health_check 실패")
+        return
+
+    failed = [(name, detail) for name, ok, detail in checks if not ok]
+    if not failed:
+        log.info("pipeline_health_check: 전체 green (%d개 검사)", len(checks))
+        return
+
+    lines = ["🚨 파이프라인 헬스 경보", "", f"{len(failed)}/{len(checks)} 검사 실패", ""]
+    for name, detail in failed:
+        lines.append(f"  ❌ {name} — {detail}")
+    ok_names = [name for name, ok, _ in checks if ok]
+    if ok_names:
+        lines += ["", f"  ✅ {', '.join(ok_names)}"]
+    lines += ["", "💡 logs/bunting.err 의 morning_data_refresh 단계 점검"]
+    try:
+        await ctx.bot.send_message(config.TELEGRAM_ADMIN_CHAT_ID, "\n".join(lines))
+        audit_service.log_event(None, "pipeline_health_alert", {
+            "failed": [n for n, _ in failed],
+        })
+    except Exception:
+        log.exception("pipeline_health 경보 발송 실패")
+
+
 async def job_daily_sell_check(ctx: ContextTypes.DEFAULT_TYPE):
     """월~금 15:20 KST — KIS 보유 종목 보여주고 매도 여부 결정 유도.
     eod_kr_sell_reminder(금요일 강제) 와 별개로, 평일 결정 트리거."""
@@ -2141,6 +2255,15 @@ def register_jobs(app: Application) -> None:
         )
     else:
         log.info("AUTO_RECOMMEND_ENABLED=false — morning_kr_recommend 잡 등록 안 함")
+
+    # 평일 08:05 — 파이프라인 헬스 체크 (07:30 데이터 + 08:00 추천 직후).
+    # 데이터 신선도 5종 + 추천 발송을 DB 독립 검증. RED 일 때만 관리자 경보.
+    jq.run_daily(
+        job_pipeline_health_check,
+        time(8, 5, tzinfo=KST),
+        days=(0, 1, 2, 3, 4),
+        name="pipeline_health_check",
+    )
 
     # 월~금 09:00 — 장 시작 시 모니터 알림 리셋
     jq.run_daily(
