@@ -87,6 +87,33 @@ python -m src.bot.telegram_bot                       # 봇 기동
 
 자세한 운영 절차: [`USAGE.md`](USAGE.md)
 
+## 다른 PC에서 작업하기 (멀티 PC)
+
+코드는 GitHub(`origin/main`)에 동기화되어 있다. 비밀값·키는 git에 없으므로(`.gitignore`)
+**수동으로 안전하게 옮겨야** 한다.
+
+```bash
+# 1. clone (private repo → GitHub 인증 필요: gh auth login 또는 PAT)
+git clone https://github.com/bbang-bbang/today_bunting_king.git
+cd today_bunting_king
+
+# 2. Python 3.12 권장 (운영 서버 기준). venv + 의존성
+python3.12 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+3. **비밀값 수동 이전** (git에 없음 — 기존 PC에서 안전하게 복사):
+   - `.env` — 실제 토큰/키 채운 파일 (`.env.example`이 전체 키 목록)
+   - `today-project.pem` — 가비아 서버 SSH 키 (서버 운영/DB 조회용)
+   - USB·암호화 채널로 옮기고, 메신저·클라우드 평문 업로드 금지.
+
+4. **작업 흐름**: 시작 시 `git pull`, 끝나면 `git push`. (로컬 main이 원격보다
+   앞선 채 방치하면 다른 PC와 어긋난다 — 이번에 그 갭을 해소했으니 유지할 것.)
+
+> DB(`data/bunting.db`)는 **운영 서버에만** 있다. 대부분의 분석/진단은
+> `ssh -i today-project.pem rocky@1.201.126.200` 로 서버 DB에 직접 한다.
+> 로컬 DB는 비어 있어도 코드 작업·테스트엔 지장 없다.
+
 ## 디렉터리
 
 ```
