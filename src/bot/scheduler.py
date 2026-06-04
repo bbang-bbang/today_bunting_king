@@ -2086,6 +2086,29 @@ async def job_pipeline_health_check(ctx: ContextTypes.DEFAULT_TYPE):
         log.exception("pipeline_health 경보 발송 실패")
 
 
+async def job_measure_signal_outcomes(ctx: ContextTypes.DEFAULT_TYPE):
+    """평일 08:10 KST — 신호 성과 측정 루프.
+
+    추천(신호)을 signal_outcomes 로 스냅샷하고, 성숙한 신호의 forward-return 을 채운다.
+    스코어러/추천 로직은 건드리지 않는 순수 계측. backfill() 은 멱등(UPSERT)이라
+    신규 추천 픽업 + 기성숙분 갱신을 한 번에 처리.
+    """
+    if not is_kr_trading_day():
+        return
+    try:
+        from src.services import measurement
+        from src.db.connection import get_connection
+        conn = get_connection()
+        try:
+            res = measurement.backfill(conn)
+        finally:
+            conn.close()
+        log.info("measure_signal_outcomes: 신호 %s건 · 세션 %s일 갱신",
+                 res.get("signals"), res.get("session_dates"))
+    except Exception:
+        log.exception("measure_signal_outcomes 실패")
+
+
 async def job_daily_sell_check(ctx: ContextTypes.DEFAULT_TYPE):
     """월~금 15:20 KST — KIS 보유 종목 보여주고 매도 여부 결정 유도.
     eod_kr_sell_reminder(금요일 강제) 와 별개로, 평일 결정 트리거."""
@@ -2466,6 +2489,15 @@ def register_jobs(app: Application) -> None:
         time(8, 5, tzinfo=KST),
         days=(0, 1, 2, 3, 4),
         name="pipeline_health_check",
+    )
+
+    # 평일 08:10 — 신호 성과 측정 루프 (추천 직후, forward-return 누적).
+    # 스코어러 무손상 계측. 추천 점수의 실제 예측력을 레짐×구간별로 축적.
+    jq.run_daily(
+        job_measure_signal_outcomes,
+        time(8, 10, tzinfo=KST),
+        days=(0, 1, 2, 3, 4),
+        name="measure_signal_outcomes",
     )
 
     # 월~금 09:00 — 장 시작 시 모니터 알림 리셋
