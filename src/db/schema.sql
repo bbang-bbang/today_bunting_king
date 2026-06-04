@@ -351,3 +351,43 @@ CREATE TABLE IF NOT EXISTS analysis_universe (
 
 CREATE INDEX IF NOT EXISTS idx_universe_cap ON analysis_universe(market_cap DESC);
 CREATE INDEX IF NOT EXISTS idx_universe_rank ON analysis_universe(rank);
+
+-- ============================================================
+-- 신호 성과 측정 (2026-06-04) — 추천 점수의 실제 예측력 계측
+-- 스코어러/추천 로직 무손상. 옆에 계측기만 단다.
+-- 핵심 식별: (session_date, code, strategy_mode) = 신호 1건 (다중 사용자 무관).
+-- forward-return·레짐 모두 진입일 이후/이하 데이터로만 계산 → 룩어헤드 차단.
+-- ============================================================
+
+-- 시장 레짐 라벨 캐시 (외부 HTTP 없이 자체 OHLCV 의 20일선 breadth 로 산출)
+CREATE TABLE IF NOT EXISTS regime_daily (
+  date         TEXT PRIMARY KEY,            -- 'YYYY-MM-DD' (거래일)
+  breadth_pct  REAL NOT NULL,              -- 종가>20일선 종목 비율 (0~100)
+  n_codes      INTEGER NOT NULL,           -- breadth 계산에 쓰인 종목수
+  regime       TEXT NOT NULL CHECK(regime IN ('up','side','down')),
+  computed_at  TEXT NOT NULL
+);
+
+-- 신호별 성적표 (1행 = 추천 1건)
+CREATE TABLE IF NOT EXISTS signal_outcomes (
+  session_date    TEXT NOT NULL,
+  code            TEXT NOT NULL,
+  strategy_mode   TEXT NOT NULL CHECK(strategy_mode IN ('bunt','squeeze')),
+  market          TEXT,                     -- KOSPI/KOSDAQ (instruments 조인)
+  rec_id          TEXT,                     -- 대표 rec_id (다중 사용자 중 1)
+  ensemble_score  REAL,
+  score_bucket    TEXT,                     -- '60-63','63-66','66+' 등
+  ref_price       INTEGER,                  -- session_date 종가 = 신호 기준가
+  regime_at_entry TEXT,                     -- up/side/down (진입일 레짐)
+  fwd_ret_5d      REAL,                     -- +5거래일 수익률 (%)
+  fwd_ret_10d     REAL,                     -- +10거래일 수익률 (%)
+  bench_ret_5d    REAL,                     -- 같은 날 유니버스 평균 +5d (%)
+  excess_ret_5d   REAL,                     -- fwd_ret_5d - bench_ret_5d (핵심)
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  PRIMARY KEY (session_date, code, strategy_mode),
+  FOREIGN KEY (code) REFERENCES instruments(code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_outcomes_bucket ON signal_outcomes(score_bucket, regime_at_entry);
+CREATE INDEX IF NOT EXISTS idx_signal_outcomes_session ON signal_outcomes(session_date);
