@@ -715,12 +715,14 @@ async def send_recommendations_dual(
 # 시장 레짐 체크
 # ============================================================
 
-async def _check_market_regime() -> tuple[bool, str]:
+async def _check_market_regime(bot=None) -> tuple[bool, str]:
     """전일 코스피 등락률 확인.
 
     config.MARKET_DOWN_THRESHOLD_PCT 미만이면 (False, reason) 반환.
     0 이하 임계값이 0.0 으로 설정된 경우 필터 비활성화.
     pykrx 실패 시 (True, "") 반환 — 추천 차단보다 발송 누락이 더 나쁨.
+    단, 실패는 관리자에게 1회 경보 (bot 전달 시) — 레짐 필터가 silent 하게
+    꺼진 채 추천이 나가는 상황을 사람이 인지하도록.
     """
     if config.MARKET_DOWN_THRESHOLD_PCT >= 0:
         return True, ""  # 필터 비활성화
@@ -749,6 +751,18 @@ async def _check_market_regime() -> tuple[bool, str]:
         return True, ""
     except Exception:
         log.warning("market_regime: 코스피 확인 실패 → 추천 진행")
+        if bot is not None and config.TELEGRAM_ADMIN_CHAT_ID:
+            try:
+                await bot.send_message(
+                    config.TELEGRAM_ADMIN_CHAT_ID,
+                    "⚠ 레짐 체크 실패 — 코스피 지수 조회 불가 (pykrx 빈 응답)\n\n"
+                    f"오늘 코스피 급락 필터(임계값 {config.MARKET_DOWN_THRESHOLD_PCT:.1f}%)가 "
+                    "적용되지 않은 채 추천이 그대로 발송됩니다.\n"
+                    "logs/bunting.err 의 market_regime 항목 점검 요망.",
+                )
+                audit_service.log_event(None, "market_regime_check_failed", {})
+            except Exception:
+                log.exception("market_regime 경보 발송 실패")
         return True, ""
 
 
@@ -828,7 +842,7 @@ async def job_morning_recommend(ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # 시장 레짐 체크 — 전일 코스피 급락 시 추천 보류
-    market_ok, market_reason = await _check_market_regime()
+    market_ok, market_reason = await _check_market_regime(ctx.bot)
     if not market_ok:
         users = _get_approved_users()
         for u in users:
