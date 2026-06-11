@@ -117,9 +117,9 @@ def test_weighted_sum_bunt_3expert(dummy_enriched):
         flow=_FakeFlow(score=40),
     )
     op = scorer.evaluate("X", dummy_enriched)
-    # 번트 7-expert 중 tech/fund/flow 만 유효 → 유효 가중치 재정규화
-    # (80*0.33 + 60*0.18 + 40*0.16) / (0.33+0.18+0.16) = 43.6 / 0.67 ≈ 65.075
-    assert op.ensemble_score == pytest.approx(65.075, abs=0.01)
+    # 번트 7-expert 중 tech/fund/flow 만 유효 → 유효 가중치 재정규화 (v3 가중치)
+    # (80*0.28 + 60*0.21 + 40*0.13) / (0.28+0.21+0.13) = 40.2 / 0.62 ≈ 64.839
+    assert op.ensemble_score == pytest.approx(64.839, abs=0.01)
     # 7명 중 3명만 유효 → fallback
     assert op.fallback_used
 
@@ -132,8 +132,8 @@ def test_weighted_sum_squeeze_3expert(dummy_enriched):
         flow=_FakeFlow(score=40),
     )
     op = scorer.evaluate("X", dummy_enriched)
-    # 스퀴즈: (80*0.37 + 60*0.09 + 40*0.16) / (0.37+0.09+0.16) = 41.4 / 0.62 ≈ 66.774
-    assert op.ensemble_score == pytest.approx(66.774, abs=0.01)
+    # 스퀴즈 (v3): (80*0.31 + 60*0.12 + 40*0.13) / (0.31+0.12+0.13) = 37.2 / 0.56 ≈ 66.429
+    assert op.ensemble_score == pytest.approx(66.429, abs=0.01)
 
 
 def test_hard_filter_warning_stock_blocks(dummy_enriched):
@@ -154,9 +154,9 @@ def test_missing_fundamental_fallback(dummy_enriched):
     )
     op = scorer.evaluate("X", dummy_enriched)
     assert op.fallback_used
-    # 재무 누락 → tech 0.33, flow 0.16 유효 → 재정규화
-    # (70*0.33 + 50*0.16) / (0.33+0.16) = 31.1 / 0.49 ≈ 63.469
-    assert op.ensemble_score == pytest.approx(63.469, abs=0.01)
+    # 재무 누락 → tech 0.28, flow 0.13 유효 → 재정규화 (v3)
+    # (70*0.28 + 50*0.13) / (0.28+0.13) = 26.1 / 0.41 ≈ 63.659
+    assert op.ensemble_score == pytest.approx(63.659, abs=0.01)
 
 
 def test_missing_flow_fallback(dummy_enriched):
@@ -168,9 +168,9 @@ def test_missing_flow_fallback(dummy_enriched):
     )
     op = scorer.evaluate("X", dummy_enriched)
     assert op.fallback_used
-    # flow 누락 → tech 0.33, fund 0.18 유효
-    # (70*0.33 + 60*0.18) / (0.33+0.18) = 33.9 / 0.51 ≈ 66.471
-    assert op.ensemble_score == pytest.approx(66.471, abs=0.01)
+    # flow 누락 → tech 0.28, fund 0.21 유효 (v3)
+    # (70*0.28 + 60*0.21) / (0.28+0.21) = 32.2 / 0.49 ≈ 65.714
+    assert op.ensemble_score == pytest.approx(65.714, abs=0.01)
 
 
 def test_both_non_tech_missing_fallback(dummy_enriched):
@@ -200,8 +200,8 @@ def test_mode_fit_weighted_average(dummy_enriched):
         flow=_FakeFlow(bunt_fit=0.4, squeeze_fit=0.6),
     )
     op = scorer.evaluate("X", dummy_enriched)
-    # bunt: (0.8*0.33 + 0.6*0.18 + 0.4*0.16) / (0.33+0.18+0.16) = 0.436 / 0.67 ≈ 0.6507
-    assert op.mode_fit["bunt"] == pytest.approx(0.6507, abs=0.001)
+    # bunt (v3): (0.8*0.28 + 0.6*0.21 + 0.4*0.13) / (0.28+0.21+0.13) = 0.402 / 0.62 ≈ 0.6484
+    assert op.mode_fit["bunt"] == pytest.approx(0.6484, abs=0.001)
 
 
 def test_score_capped(dummy_enriched):
