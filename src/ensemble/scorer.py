@@ -1,13 +1,14 @@
 """앙상블 스코어러 — 기술 + 재무 + 흐름 + 뉴스 + 분봉 + 커뮤니티 + 유튜브 7-expert 가중합.
 
-번트: tech 0.28, fund 0.21, flow 0.13, news 0.09, minute 0.09, community 0.10, youtube 0.10
-스퀴즈: tech 0.31, fund 0.12, flow 0.13, news 0.09, minute 0.13, community 0.11, youtube 0.11
+번트: tech 0.23, fund 0.25, flow 0.13, news 0.10, minute 0.09, community 0.10, youtube 0.10
+스퀴즈: tech 0.26, fund 0.15, flow 0.13, news 0.09, minute 0.15, community 0.11, youtube 0.11
 
-가중치 v3 (2026-06-11 보수적 재조정): 성숙 신호 152건(down레짐 치우침)의
-전문가점수↔5일수익 상관 측정 결과 — 기술 -0.08(최대가중인데 무상관)·흐름 -0.36(역상관)
-이 과대평가, 재무 +0.21·커뮤 +0.41·유튜브 +0.30 이 과소평가로 확인됨. 표본이 단일
-레짐이라 과적합 위험 → 방향만 반영해 기술·흐름 소폭↓, 재무·커뮤·유튜브 소폭↑ (기술은
-여전히 최대 비중 유지). 측정 루프가 효과를 추적, 데이터 누적 후 재검토.
+가중치 v4 (2026-06-11): 성숙 신호 152건(down레짐 치우침)의 전문가점수↔5일수익 상관 측정 —
+기술 -0.08(무상관)·흐름 -0.36(역상관) 과대, 재무 +0.21·커뮤 +0.41·유튜브 +0.30 과소로 확인.
+v3에서 한 번, v4에서 기술을 한 단계 더 축소(번트 .28→.23·스퀴즈 .31→.26)하고 옮긴 가중치를
+레짐에 덜 휘둘리는 재무로 주로 이동(스퀴즈는 부활한 분봉에도 배분). 단 표본이 급락장 단일
+구간이라 기술은 상승장에서 예측력이 살아날 수 있어 과도한 컷은 피함(여전히 상위권 비중).
+측정 루프(signal_outcomes)가 v4 효과를 추적, 여러 레짐 데이터 누적 후 재검토.
 
 하드 필터:
   - 재무의 is_acceptable()=False → 즉시 탈락
@@ -50,11 +51,11 @@ class EnsembleWeights:
             raise ValueError(f"가중치 합이 1.0 이 아님: {total}")
 
 
-# 모드별 기본 가중치 (v3 — 2026-06-11 보수적 재조정, 상관 측정 기반. docstring 참조)
-# 번트:   0.28+0.21+0.13+0.09+0.09+0.10+0.10 = 1.00
-# 스퀴즈: 0.31+0.12+0.13+0.09+0.13+0.11+0.11 = 1.00
-BUNT_WEIGHTS    = EnsembleWeights(technical=0.28, fundamental=0.21, flow=0.13, news=0.09, minute=0.09, community=0.10, youtube=0.10)
-SQUEEZE_WEIGHTS = EnsembleWeights(technical=0.31, fundamental=0.12, flow=0.13, news=0.09, minute=0.13, community=0.11, youtube=0.11)
+# 모드별 기본 가중치 (v4 — 2026-06-11 상관 측정 기반 추가 조정. docstring 참조)
+# 번트:   0.23+0.25+0.13+0.10+0.09+0.10+0.10 = 1.00
+# 스퀴즈: 0.26+0.15+0.13+0.09+0.15+0.11+0.11 = 1.00
+BUNT_WEIGHTS    = EnsembleWeights(technical=0.23, fundamental=0.25, flow=0.13, news=0.10, minute=0.09, community=0.10, youtube=0.10)
+SQUEEZE_WEIGHTS = EnsembleWeights(technical=0.26, fundamental=0.15, flow=0.13, news=0.09, minute=0.15, community=0.11, youtube=0.11)
 
 
 @dataclass
