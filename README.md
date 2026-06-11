@@ -72,7 +72,7 @@ def _is_trading_day_cached(iso_date: str) -> bool:
 
 - **Immutable audit trail** — 추천·매수·매도·reconcile 모든 이벤트 `audit_log` 추가 전용
 - **Reversible 정정 도구** — `scripts/reconcile_positions.py` 는 dry-run 기본, `--apply` 명시 시만 변경, audit 동반 기록
-- **Config 노브** — `RECOMMEND_MIN_SCORE` · `AUTO_RECOMMEND_ENABLED` · `MARKET_DOWN_THRESHOLD_PCT` · `REGIME_DEGRADED_*`(급변장 단타 전환 on·점수·시드%) · 모드별 TP/SL — 코드 변경 없이 운영 조정
+- **Config 노브** — `RECOMMEND_MIN_SCORE` · `AUTO_RECOMMEND_ENABLED` · `MARKET_DOWN_THRESHOLD_PCT` · `REGIME_DEGRADED_*`(급변장 단타 전환 on·점수·시드%) · `BALANCE_CACHE_TTL_SEC`(잔고 캐시 TTL) · 모드별 TP/SL — 코드 변경 없이 운영 조정
 - **Backup + sync 검증 의무** — 운영 변경 시 `*.bak.YYYYMMDD` 보관, 로컬↔운영 diff + smoke test
 
 ## 실행

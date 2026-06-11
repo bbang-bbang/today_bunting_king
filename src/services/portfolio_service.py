@@ -349,18 +349,53 @@ def get_account_summary(chat_id: int, active_seed: int) -> dict:
     }
 
 
-async def get_broker_balance(trade_mode: str) -> dict | None:
+# 브로커 잔고 캐시 — (trade_mode) → (monotonic_ts, data).
+# KIS inquire-balance 가 한 콜에 6초+ 걸리는 날이 있어, 여러 잡/버튼이 같은 계좌 잔고를
+# 짧은 시간에 중복 호출하면 그만큼 줄 서서 느려진다. TTL 내 재요청은 캐시로 즉답하고,
+# 락으로 동시 호출(같은 ms 2건 등)을 단일 네트워크 콜로 합친다. 매수·매도 후엔 무효화.
+_balance_cache: dict[str, tuple[float, dict]] = {}
+_balance_cache_lock = asyncio.Lock()
+
+
+def invalidate_balance_cache(trade_mode: str | None = None) -> None:
+    """잔고 캐시 무효화. trade_mode 미지정 시 전체. 매수/매도 체결·주문 직후 호출."""
+    if trade_mode is None:
+        _balance_cache.clear()
+    else:
+        _balance_cache.pop(trade_mode, None)
+
+
+async def get_broker_balance(trade_mode: str, *, use_cache: bool = True) -> dict | None:
     """실제 브로커 계좌 잔고 조회. paper 모드에선 None 반환.
 
-    KIS 호출 실패 시 {"error": "...msg..."} 형태로 반환 (UI 에 오류 표시).
+    TTL(config.BALANCE_CACHE_TTL_SEC) 내 재요청은 캐시 반환 — 동시 호출은 락으로 1회로 합침.
+    에러 응답({"error": ...})은 캐시하지 않아 다음 호출에서 즉시 재시도된다.
+    use_cache=False 면 강제로 새로 조회(정합성 진단 등). KIS 호출 실패 시 {"error": ...} 반환.
     """
     if trade_mode == "paper":
         return None
-    try:
-        broker = get_broker(trade_mode)
-        return await broker.get_balance()
-    except Exception as e:
-        return {"error": str(e)}
+
+    import time as _time
+    ttl = config.BALANCE_CACHE_TTL_SEC
+    if use_cache and ttl > 0:
+        hit = _balance_cache.get(trade_mode)
+        if hit and (_time.monotonic() - hit[0]) < ttl:
+            return hit[1]
+
+    async with _balance_cache_lock:
+        # 락 대기 중 다른 코루틴이 갱신했을 수 있으니 재확인 (동시 호출 합치기).
+        if use_cache and ttl > 0:
+            hit = _balance_cache.get(trade_mode)
+            if hit and (_time.monotonic() - hit[0]) < ttl:
+                return hit[1]
+        try:
+            broker = get_broker(trade_mode)
+            data = await broker.get_balance()
+        except Exception as e:
+            return {"error": str(e)}
+        if ttl > 0 and isinstance(data, dict) and "error" not in data:
+            _balance_cache[trade_mode] = (_time.monotonic(), data)
+        return data
 
 
 # ============================================================
@@ -466,6 +501,7 @@ async def _execute_buy_inner(
     broker = get_broker(config.TRADE_MODE.value)
     req = OrderRequest(side="buy", code=code, quantity=quantity, price=price)
     res = await broker.submit_order(req)
+    invalidate_balance_cache(config.TRADE_MODE.value)  # 주문 후 잔고 변동 → 다음 조회는 최신
 
     # 'partial' 도 체결의 일종 — 부분 체결 수량만 봇 DB 에 기록.
     if res.status not in ("filled", "partial"):
@@ -636,6 +672,7 @@ async def execute_sell(
     broker = get_broker(config.TRADE_MODE.value)
     req = OrderRequest(side="sell", code=code, quantity=qty, price=price)
     res = await broker.submit_order(req)
+    invalidate_balance_cache(config.TRADE_MODE.value)  # 주문 후 잔고 변동 → 다음 조회는 최신
 
     # 매도 응답 분기:
     #   filled / partial: 정상 체결 → position close + PnL 기록
@@ -764,6 +801,7 @@ async def execute_sell_all_by_code(chat_id: int, code: str) -> dict:
     # 2) 시장가 매도 (price=None → ORD_DVSN=01 시장가)
     req = OrderRequest(side="sell", code=code, quantity=qty, price=None)
     res = await broker.submit_order(req)
+    invalidate_balance_cache(config.TRADE_MODE.value)  # 주문 후 잔고 변동 → 다음 조회는 최신
 
     # pending = KIS 등록됐지만 미체결 대기 (KIS 모의투자 quirk).
     # 봇 DB position 들에 sell_order_id 마킹만 하고 close 안 함 (체결가 모름).

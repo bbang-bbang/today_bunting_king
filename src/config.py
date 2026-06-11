@@ -59,6 +59,11 @@ AUTO_RECOMMEND_ENABLED = _env("AUTO_RECOMMEND_ENABLED", "true").lower() in ("1",
 # 잔고 정기 푸시 — 장중(09:10~15:30) 매 N분. 0 이면 비활성.
 BALANCE_PERIODIC_MINUTES = int(_env("BALANCE_PERIODIC_MINUTES", "0"))
 
+# 브로커 잔고(KIS inquire-balance) 캐시 TTL(초). 같은 계좌 잔고를 N초 내 재요청하면
+# 네트워크 콜 없이 캐시 반환 — 여러 잡/버튼이 동시·연속 호출 시 중복 KIS 콜 합침.
+# 매수·매도 직후엔 자동 무효화되어 항상 최신 반영. 0 이면 캐시 비활성. (기본 8)
+BALANCE_CACHE_TTL_SEC = float(_env("BALANCE_CACHE_TTL_SEC", "8"))
+
 # 추천 최소 앙상블 점수 (0~100). 기본 60 — 5/7 임계 컷으로 picks 부족 (62 시 4건) → 60 으로 완화.
 RECOMMEND_MIN_SCORE = float(_env("RECOMMEND_MIN_SCORE", "60"))
 
