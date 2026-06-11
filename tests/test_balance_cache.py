@@ -14,14 +14,15 @@ import src.services.portfolio_service as ps
 
 
 @pytest.fixture(autouse=True)
-def reset_cache(monkeypatch):
+def _mp(monkeypatch):
+    """각 테스트에 monkeypatch 노출 + 캐시/TTL 초기화. get_broker 패치는 자동 복원."""
     ps.invalidate_balance_cache()
     monkeypatch.setattr(config, "BALANCE_CACHE_TTL_SEC", 8.0)
-    yield
+    yield monkeypatch
     ps.invalidate_balance_cache()
 
 
-def _install_broker(calls: dict, delay: float = 0.05, payload: dict | None = None):
+def _install_broker(monkeypatch, calls: dict, delay: float = 0.05, payload: dict | None = None):
     payload = payload if payload is not None else {"positions": [], "total_evaluation": 1_000_000}
 
     class _Fake:
@@ -30,13 +31,14 @@ def _install_broker(calls: dict, delay: float = 0.05, payload: dict | None = Non
             await asyncio.sleep(delay)
             return dict(payload)
 
-    ps.get_broker = lambda mode: _Fake()  # type: ignore[assignment]
+    # monkeypatch.setattr 로 패치 → 테스트 종료 시 원복(다른 테스트로 누수 방지).
+    monkeypatch.setattr(ps, "get_broker", lambda mode: _Fake())
 
 
-def test_concurrent_calls_collapse_to_one():
+def test_concurrent_calls_collapse_to_one(_mp):
     """동시 5건 → 락으로 단일 KIS 콜."""
     calls: dict = {}
-    _install_broker(calls, delay=0.2)
+    _install_broker(_mp, calls, delay=0.2)
 
     async def run():
         return await asyncio.gather(*[ps.get_broker_balance("kis_mock") for _ in range(5)])
@@ -46,9 +48,9 @@ def test_concurrent_calls_collapse_to_one():
     assert all(r["total_evaluation"] == 1_000_000 for r in results)
 
 
-def test_ttl_hit_serves_cache():
+def test_ttl_hit_serves_cache(_mp):
     calls: dict = {}
-    _install_broker(calls)
+    _install_broker(_mp, calls)
 
     async def run():
         await ps.get_broker_balance("kis_mock")
@@ -58,9 +60,9 @@ def test_ttl_hit_serves_cache():
     assert calls["n"] == 1
 
 
-def test_invalidate_forces_refetch():
+def test_invalidate_forces_refetch(_mp):
     calls: dict = {}
-    _install_broker(calls)
+    _install_broker(_mp, calls)
 
     async def run():
         await ps.get_broker_balance("kis_mock")
@@ -71,7 +73,7 @@ def test_invalidate_forces_refetch():
     assert calls["n"] == 2
 
 
-def test_error_response_not_cached():
+def test_error_response_not_cached(_mp):
     """KIS 실패 응답은 캐시하지 않아 다음 호출에서 즉시 재시도."""
     calls: dict = {}
 
@@ -80,7 +82,7 @@ def test_error_response_not_cached():
             calls["n"] = calls.get("n", 0) + 1
             raise RuntimeError("KIS 다운")
 
-    ps.get_broker = lambda mode: _Boom()  # type: ignore[assignment]
+    _mp.setattr(ps, "get_broker", lambda mode: _Boom())
 
     async def run():
         r1 = await ps.get_broker_balance("kis_mock")
@@ -92,10 +94,10 @@ def test_error_response_not_cached():
     assert calls["n"] == 2  # 캐시 안 했으므로 매번 시도
 
 
-def test_ttl_zero_disables_cache(monkeypatch):
-    monkeypatch.setattr(config, "BALANCE_CACHE_TTL_SEC", 0.0)
+def test_ttl_zero_disables_cache(_mp):
+    _mp.setattr(config, "BALANCE_CACHE_TTL_SEC", 0.0)
     calls: dict = {}
-    _install_broker(calls)
+    _install_broker(_mp, calls)
 
     async def run():
         await ps.get_broker_balance("kis_mock")
@@ -105,8 +107,8 @@ def test_ttl_zero_disables_cache(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_paper_mode_returns_none():
+def test_paper_mode_returns_none(_mp):
     calls: dict = {}
-    _install_broker(calls)
+    _install_broker(_mp, calls)
     assert asyncio.run(ps.get_broker_balance("paper")) is None
     assert calls.get("n", 0) == 0

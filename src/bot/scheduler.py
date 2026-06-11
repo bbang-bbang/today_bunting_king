@@ -2237,8 +2237,7 @@ async def job_measure_signal_outcomes(ctx: ContextTypes.DEFAULT_TYPE):
         return
     try:
         from src.services import measurement
-        from src.db.connection import get_connection
-        conn = get_connection()
+        conn = get_connection()  # module-level import 사용 (지역 재import 시 shadow → UnboundLocalError 위험)
         try:
             res = measurement.backfill(conn)
         finally:
@@ -2570,6 +2569,39 @@ async def job_eod_review_report(ctx: ContextTypes.DEFAULT_TYPE):
             log.exception("eod_review_report: chat_id=%s 실패", u.chat_id)
 
 
+async def job_minute_collect(ctx: ContextTypes.DEFAULT_TYPE):
+    """월~금 15:40 KST — 장마감 후 당일 분봉(09:00~15:30) 수집.
+
+    분봉(minute) expert 의 데이터 피드. 추천(08:00)은 as_of=전일(최근 세션)로 평가하므로,
+    오늘 마감 후 당일 분봉을 채워두면 다음 영업일 08:00 추천에서 분봉 expert 가 부활한다
+    (특히 스퀴즈 가중치 0.13 복원 — 그간 데이터 결손으로 6전문가 재정규화 상태였음).
+
+    주의: KIS inquire-time-itemchartprice 는 '당일치'만 반환 → 반드시 마감 직후 당일 수집해야
+    하며 과거 임의일 백필은 불가. 유니버스 ~500종목 순차라 무겁다 →
+    asyncio.to_thread 로 이벤트 루프 비차단(잔고/체결과의 컨텐션 회피).
+    """
+    if not is_kr_trading_day():
+        log.info("minute_collect: 오늘은 KRX 휴장일 — 스킵")
+        return
+
+    import asyncio
+    from datetime import date as _date
+
+    from src.crawlers import fetch_ohlcv_minute
+
+    codes = _list_candidate_codes()
+    if not codes:
+        log.warning("minute_collect: analysis_universe 비어있음 — 스킵")
+        return
+
+    log.info("minute_collect: 분봉 수집 시작 — %d 종목", len(codes))
+    try:
+        n = await asyncio.to_thread(fetch_ohlcv_minute.run, _date.today(), codes)
+        log.info("minute_collect: 완료 — %d 행 (%d 종목)", n, len(codes))
+    except Exception:
+        log.exception("minute_collect: 분봉 수집 실패")
+
+
 # ============================================================
 # 등록
 # ============================================================
@@ -2738,6 +2770,14 @@ def register_jobs(app: Application) -> None:
         name="eod_kr_sell_reminder",
     )
 
+    # 월~금 15:40 — 장마감 후 당일 분봉 수집 (분봉 expert 피드, 다음날 추천 위해)
+    jq.run_daily(
+        job_minute_collect,
+        time(15, 40, tzinfo=KST),
+        days=(0, 1, 2, 3, 4),  # 월~금
+        name="minute_collect",
+    )
+
     # 금 15:40 — 주간 회고 리포트
     jq.run_daily(
         job_eod_review_report,
@@ -2749,6 +2789,6 @@ def register_jobs(app: Application) -> None:
         "Scheduled: data_refresh 평일 07:30, sell_report 평일 08:00, "
         "recommend 평일 08:00, monitor 09:05~15:30/3min, "
         "pending_rec 09:07~15:30/3min, pending_buy_poll 09:01~15:30/1min, "
-        "collect 금 16:00, rebuild 일 23:00, "
+        "minute_collect 평일 15:40, collect 금 16:00, rebuild 일 23:00, "
         "sell_reminder 평일 15:20 (금=전체/평일=day모드), review 금 15:40 KST"
     )
