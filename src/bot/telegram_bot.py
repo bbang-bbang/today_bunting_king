@@ -1283,6 +1283,33 @@ async def cmd_lookup(update: Update, ctx: ContextTypes.DEFAULT_TYPE, query: str)
     if filt_reason:
         lines.append(f"  └ 탈락 사유: {filt_reason}")
 
+    # 섀도우 캘리브레이션 — 이 점수대가 과거(현 레짐) 실제로 어땠는지 (픽 변경 아님, 정보)
+    try:
+        from src.services import measurement as _meas
+        _conn = get_connection()
+        try:
+            _regime = _meas.current_regime(_conn)
+            _cidx = _meas.calibration_index(_conn, _regime) if _regime else {}
+        finally:
+            _conn.close()
+    except Exception:
+        _cidx = {}
+    if _cidx:
+        _rk = {"up": "상승장", "side": "횡보장", "down": "급락장", "ALL": "전체"}
+        shadow = []
+        for m in ("bunt", "squeeze"):
+            row = _cidx.get(_meas._bucket(res["modes"][m]["score"]))
+            if not row:
+                continue
+            reg = _rk.get(row["regime"], row["regime"])
+            flag = " ⚠반복" if row["uniq_codes"] * 2 < row["n"] else ""
+            shadow.append(
+                f"  {mode_icon[m]} 과거 {reg}·{row['bucket']}점대: "
+                f"5일 {row['avg_ret_5d']:+.1f}% · 승률 {row['win_pct']:.0f}% · n{row['n']}{flag}"
+            )
+        if shadow:
+            lines += ["", "📐 섀도우 실측 (같은 점수대 과거 성적 · 캘리브레이션 미적용 참고)"] + shadow
+
     # 전문가별
     ex = res["experts"]
     ex_parts = [f"{k} {v:.0f}" if v is not None else f"{k} ✗" for k, v in ex.items()]

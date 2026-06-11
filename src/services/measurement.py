@@ -254,6 +254,40 @@ def calibration(conn, by_regime: bool = True) -> list[dict]:
     return out
 
 
+def current_regime(conn) -> str | None:
+    """가장 최근 regime_daily 레짐(up/side/down). 없으면 오늘 기준 계산(미저장)."""
+    r = conn.execute(
+        "SELECT regime FROM regime_daily ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    if r:
+        return r["regime"]
+    from datetime import date as _d
+    res = compute_regime(conn, _d.today().isoformat())
+    return res["regime"] if res else None
+
+
+def calibration_index(conn, regime: str | None, *, min_n: int = 3) -> dict[str, dict]:
+    """{score_bucket: 캘리브레이션 row} — regime 일치 우선, 없으면 ALL(레짐 무시) 폴백.
+
+    섀도우 표시용. n<min_n 인 (표본 과소) 버킷은 제외해 오해를 막는다.
+    """
+    all_rows = {r["bucket"]: r for r in calibration(conn, by_regime=False)}
+    reg_rows = {
+        r["bucket"]: r
+        for r in calibration(conn, by_regime=True)
+        if r["regime"] == regime
+    }
+    idx: dict[str, dict] = {}
+    for b in set(all_rows) | set(reg_rows):
+        row = reg_rows.get(b)
+        if row is None:
+            row = dict(all_rows[b])
+            row["regime"] = "ALL"
+        if row["n"] >= min_n:
+            idx[b] = row
+    return idx
+
+
 def format_report(conn) -> str:
     lines = ["📊 신호 캘리브레이션 (5거래일 forward-return)", ""]
     total = conn.execute(

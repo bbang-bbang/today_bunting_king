@@ -140,6 +140,29 @@ def _lead_experts(expert_scores: dict, mode: str, top_k: int = 2) -> str:
     return " · ".join(parts)
 
 
+_REGIME_KR_CALIB = {"up": "상승장", "side": "횡보장", "down": "급락장", "ALL": "전체"}
+
+
+def _calib_shadow_line(score: float, calib_idx: dict) -> str:
+    """섀도우 캘리브레이션 한 줄 — 이 점수대가 과거(해당 레짐) 실제로 어땠는지.
+
+    앙상블 점수는 미래수익에 캘리브레이션된 적이 없다(60점≠수익확률 60%). 그 한계를
+    숨기지 않고 '과거 같은 점수대의 실측 결과'를 정직하게 보여준다. 픽 변경은 없다(섀도우).
+    데이터(해당 버킷) 없으면 빈 문자열.
+    """
+    from src.services.measurement import _bucket
+    row = calib_idx.get(_bucket(score))
+    if not row:
+        return ""
+    reg = _REGIME_KR_CALIB.get(row["regime"], row["regime"])
+    flag = " ⚠반복표본" if row["uniq_codes"] * 2 < row["n"] else ""
+    return (
+        f"  📐 섀도우(과거 {reg}·{row['bucket']}점대): "
+        f"5일 평균 {row['avg_ret_5d']:+.1f}% · 승률 {row['win_pct']:.0f}% · "
+        f"n{row['n']}(고유{row['uniq_codes']}{flag})"
+    )
+
+
 # ============================================================
 # 거래일 체크
 # ============================================================
@@ -456,6 +479,17 @@ async def _send_unified_rec(
     modes_present = [m for m in ("bunt", "squeeze") if m in by_mode]
     cross = len(modes_present) == 2
 
+    # 섀도우 캘리브레이션 인덱스 (점수대 과거 실측 표시용 — 픽 변경 아님)
+    from src.services import measurement as _meas
+    _conn = get_connection()
+    try:
+        _regime = _meas.current_regime(_conn)
+        _calib_idx = _meas.calibration_index(_conn, _regime) if _regime else {}
+    except Exception:
+        _calib_idx = {}
+    finally:
+        _conn.close()
+
     head_lines = [
         f"📊 {company_name or code} ({code})",
     ]
@@ -492,6 +526,9 @@ async def _send_unified_rec(
         ]
         if d.get("lead"):
             lines.append(f"  🧩 주도   {d['lead']}")
+        calib = _calib_shadow_line(d["ensemble_score"], _calib_idx)
+        if calib:
+            lines.append(calib)
 
     if trend_line:
         lines += ["", f"📉 {trend_line}"]
