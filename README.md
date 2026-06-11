@@ -11,6 +11,8 @@
 - 매 영업일 08:00, KRX 상위 500종목을 7각도(기술·재무·수급·뉴스·분봉·커뮤니티·유튜브)로 채점해 **상위 종목을 텔레그램으로 발송**
 - 사용자는 **버튼 한 번**으로 KIS 증권사 API에 매수 주문 — 안전장치(시드 상한·집중 한도·연속 손실·PIN·장 시간 가드) 통과 시만 체결
 - 장중 3분 간격 가격 모니터링 → 목표가·손절가 도달 시 즉시 알림
+- **급변장(전일 코스피 급락) 대응** — 추천을 통째 보류하는 대신 "단타 전환"(번트 only·점수 바 상향·시드 축소)으로 발송해 침묵하지 않음
+- 추천 외 임의 종목도 `/lookup <코드|이름>` 으로 7전문가 평가·뉴스·가상 TP/SL 즉석 조회 (정보 전용)
 - 금요일 15:20 미청산 리마인더, 15:40 주간 회고 자동 발송
 - 단일 운영자가 가비아 단일 서버에 systemd 로 24/7 무인 운영 중. 운영 중 P0 사고는 자체 진단·복구·재발방지 표준화 사이클로 처리 ([deep-dive](portfolio.md))
 
@@ -70,7 +72,7 @@ def _is_trading_day_cached(iso_date: str) -> bool:
 
 - **Immutable audit trail** — 추천·매수·매도·reconcile 모든 이벤트 `audit_log` 추가 전용
 - **Reversible 정정 도구** — `scripts/reconcile_positions.py` 는 dry-run 기본, `--apply` 명시 시만 변경, audit 동반 기록
-- **Config 노브** — `RECOMMEND_MIN_SCORE` · `AUTO_RECOMMEND_ENABLED` · 모드별 TP/SL — 코드 변경 없이 운영 조정
+- **Config 노브** — `RECOMMEND_MIN_SCORE` · `AUTO_RECOMMEND_ENABLED` · `MARKET_DOWN_THRESHOLD_PCT` · `REGIME_DEGRADED_*`(급변장 단타 전환 on·점수·시드%) · 모드별 TP/SL — 코드 변경 없이 운영 조정
 - **Backup + sync 검증 의무** — 운영 변경 시 `*.bak.YYYYMMDD` 보관, 로컬↔운영 diff + smoke test
 
 ## 실행

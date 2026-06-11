@@ -396,7 +396,9 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "  /panic · 긴급청산 · 전체매도 · 패닉         전 포지션 즉시 청산\n"
         "\n"
         "📊 조회\n"
-        "  /balance · 잔고 · 내잔고 · 포지션           보유 + 현금 + KIS 실계좌\n"
+        "  /balance · 잔고 · 내잔고 · 포지션           보유 + 현금 + KIS 실계좌 (+즉시매도 버튼)\n"
+        "  /lookup <코드|이름> · 조회 삼성전자          임의 종목 정보 (앙상블·뉴스·가상 TP/SL)\n"
+        "    └ 종목명·코드만 입력해도 조회됩니다 (예: 005930)\n"
         "  /pnl · 손익 · 수익 · 수익률                 오늘 청산·미실현·누적·승률\n"
         "  /history · 히스토리 · 거래내역 · 거래 · 이력  최근 7일 매수·매도\n"
         "\n"
@@ -448,11 +450,20 @@ async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     args = ctx.args or []
     if not args:
+        from src.risk.guard import MODE_PARAMS, SWING_MODE_PARAMS, StrategyMode
+        sb = SWING_MODE_PARAMS[StrategyMode.BUNT]
+        sq = SWING_MODE_PARAMS[StrategyMode.SQUEEZE]
+        db = MODE_PARAMS[StrategyMode.BUNT]
+        dq = MODE_PARAMS[StrategyMode.SQUEEZE]
         await update.message.reply_text(
             f"현재 전략: {user.strategy_mode}\n"
             f"변경: /mode bunt  또는  /mode squeeze\n\n"
-            f"bunt:    +3% 익절 / -2% 손절 (안정)\n"
-            f"squeeze: +5% 익절 / -3% 손절 (공격)"
+            f"기본(주간 스윙) 자동매도 — 추천이 적용하는 값:\n"
+            f"  🟢 bunt(안정)    +{sb['tp_pct']}% 익절 / -{sb['sl_pct']}% 손절\n"
+            f"  🟠 squeeze(공격) +{sq['tp_pct']}% 익절 / -{sq['sl_pct']}% 손절\n\n"
+            f"당일매매(/holding day)면 더 좁게:\n"
+            f"  bunt +{db['tp_pct']}/-{db['sl_pct']}  ·  squeeze +{dq['tp_pct']}/-{dq['sl_pct']}\n\n"
+            f"내게 지금 적용되는 값은 /strategy"
         )
         return
     mapping = {"번트": "bunt", "스퀴즈": "squeeze",
@@ -627,6 +638,20 @@ async def cmd_early(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ 변경 실패")
 
 
+def _open_position_targets(chat_id: int) -> dict[str, tuple[int, int]]:
+    """봇 DB 미청산 포지션의 code → (목표가, 손절가) 맵.
+    KIS 모드 잔고에 자동매도가를 곁들여 보여주기 위함. 같은 종목 분할매수면 첫 레코드 기준."""
+    try:
+        s = portfolio_service.get_account_summary(chat_id, config.SEED_KRW)
+    except Exception:
+        return {}
+    out: dict[str, tuple[int, int]] = {}
+    for p in s.get("open_positions", []):
+        if p.code not in out and p.target_price and p.stop_price:
+            out[p.code] = (int(p.target_price), int(p.stop_price))
+    return out
+
+
 async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await _require_approved(update)
     if not user:
@@ -636,6 +661,8 @@ async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     is_kis_mode = config.TRADE_MODE in (
         config.TradeMode.KIS_MOCK, config.TradeMode.LIVE,
     )
+    # 보유종목별 즉시매도 버튼용 — (code, name, qty, avg, current) 수집
+    sell_items: list[dict] = []
 
     if is_kis_mode:
         # KIS 일원화 — KIS 실계좌가 메인. 봇 DB는 백엔드에서만 (히스토리/회고 위해).
@@ -658,6 +685,7 @@ async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 lines.append("     ⚠ D+2 결제 대기 — 모의투자라 실제 빚 아닙니다")
             if broker_bal["positions"]:
                 lines += ["", f"📦 보유 {len(broker_bal['positions'])}종목"]
+                targets = _open_position_targets(user.chat_id)
                 total_cost_kis = 0
                 for p in broker_bal["positions"]:
                     cost = p["quantity"] * p["avg_price"]
@@ -673,8 +701,18 @@ async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         f"  │ 💰 매수금    {cost:,}원",
                         f"  │ 📊 평가손익  {p['pnl']:+,}원  ({p['pnl_pct']:+.2f}%)",
                         f"  │ {net_icon} 실손익    {net:+,}원  ({net_pct:+.2f}%)",
-                        "  └─",
                     ]
+                    ts = targets.get(p["code"])
+                    if ts:
+                        tp, sl = ts
+                        lines.append(f"  │ 🎯 자동매도 {tp:,}  /  🛑 {sl:,}")
+                    lines.append("  └─")
+                    sell_items.append({
+                        "code": p["code"], "name": p.get("name", ""),
+                        "quantity": int(p["quantity"]),
+                        "avg": int(p["avg_price"]), "current": int(p["current_price"]),
+                        "net": int(net),
+                    })
                 lines.append(f"  Σ 총 매수금  {total_cost_kis:,}원")
             else:
                 lines += ["", "📦 보유 종목 없음"]
@@ -716,6 +754,13 @@ async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"  │ 🎯 목표 {tp:,}  /  🛑 손절 {sl:,}",
                     f"  └ 진입일 {earliest}",
                 ]
+                # 같은 종목이 여러 모드여도 즉시매도는 전량 1회 — code 기준 1건만
+                if not any(it["code"] == code for it in sell_items):
+                    sell_items.append({
+                        "code": code, "name": name,
+                        "quantity": total_qty, "avg": avg_price,
+                        "current": avg_price, "net": 0,
+                    })
             lines.append(f"  Σ 총 매수금  {total_cost:,}원")
         else:
             lines += ["", "📦 보유 포지션  없음"]
@@ -730,7 +775,27 @@ async def cmd_balance(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"🧾 최근 7일 거래  {n_buy}건 매수 · {n_sell}건 매도  (/history 상세)",
         ]
 
-    await update.message.reply_text("\n".join(lines))
+    # 보유종목이 있으면 자동매도 도달 전이라도 바로 팔 수 있게 즉시매도 버튼 첨부
+    reply_markup = None
+    if sell_items:
+        lines += ["", "ℹ 자동매도가 도달 전에 바로 팔려면 아래 버튼 (시장가 전량)"]
+        keyboard = []
+        for it in sell_items:
+            intent = {
+                "action": "sell_all",
+                "code": it["code"], "name": it["name"],
+                "kis_quantity": it["quantity"],
+                "kis_avg": it["avg"], "kis_current": it["current"],
+            }
+            uuid = confirmation_service.create(user.chat_id, intent)
+            head = f"{it['code']} {it['name']}" if it["name"] else it["code"]
+            keyboard.append([InlineKeyboardButton(
+                f"🔴 즉시매도  {head}  ·  {it['quantity']}주",
+                callback_data=f"sellpick:{uuid}",
+            )])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text("\n".join(lines), reply_markup=reply_markup)
 
 
 async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1076,6 +1141,187 @@ async def cmd_rerecommend(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "last_bar": last_bar,
             "sent": sent,
         })
+
+
+# ============================================================
+# 임의 종목 조회 (#2) — 추천 외 종목 코드/이름 입력 시 정보 정리
+# ============================================================
+
+_EXPERT_KR = {
+    "technical": "기술", "fundamental": "재무", "flow": "흐름",
+    "news": "뉴스", "minute": "분봉", "community": "커뮤", "youtube": "유튜브",
+}
+
+
+def _resolve_stock(query: str) -> tuple[str | None, str, list[tuple[str, str]]]:
+    """입력을 (code, name, 후보목록) 으로 해석.
+    - 6자리 숫자 → 코드로 직행 (instruments 에 없어도 시도)
+    - 이름 → 정확매칭 우선, 없으면 부분매칭. 다수면 후보목록 반환(code=None)."""
+    q = query.strip()
+    conn = get_connection()
+    try:
+        if q.isdigit() and len(q) == 6:
+            row = conn.execute(
+                "SELECT code, name FROM instruments WHERE code=?", (q,)
+            ).fetchone()
+            return (row[0], row[1], []) if row else (q, "", [])
+        exact = conn.execute(
+            "SELECT code, name FROM instruments WHERE name=? LIMIT 6", (q,)
+        ).fetchall()
+        rows = exact if exact else conn.execute(
+            "SELECT code, name FROM instruments WHERE name LIKE ? LIMIT 6", (f"%{q}%",)
+        ).fetchall()
+        if len(rows) == 1:
+            return rows[0][0], rows[0][1], []
+        if len(rows) > 1:
+            return None, "", [(r[0], r[1]) for r in rows]
+        return None, "", []
+    finally:
+        conn.close()
+
+
+def _evaluate_single(code: str) -> dict:
+    """단일 종목 7-전문가 평가 + 모드별 앙상블 점수. 무겁다 → to_thread 로 호출."""
+    from src.indicators import compute_all, load_ohlcv
+    from src.ensemble.scorer import EnsembleScorer
+    from src.experts.technical import TechnicalExpert
+    from src.experts.fundamental import FundamentalExpert
+    from src.experts.flow import FlowExpert
+    from src.experts.news import NewsExpert
+    from src.experts.minute import MinuteExpert
+    from src.experts.community import CommunityExpert
+    from src.experts.youtube import YoutubeExpert
+
+    df = load_ohlcv(code)
+    if df is None or df.empty or len(df) < 60:
+        return {"ok": False, "error": "일봉 60일 미만 — 분석 불가 (데이터 부족)"}
+    enriched = compute_all(df)
+    last_close = int(df["close"].iloc[-1])
+
+    # 전문가별 점수 — 하드필터와 무관하게 항상 전체 표시 (조회는 정보 제공이 목적)
+    raw = {
+        "technical": TechnicalExpert().evaluate(code, enriched),
+        "fundamental": FundamentalExpert().evaluate(code),
+        "flow": FlowExpert().evaluate(code),
+        "news": NewsExpert().evaluate(code),
+        "minute": MinuteExpert().evaluate(code),
+        "community": CommunityExpert().evaluate(code),
+        "youtube": YoutubeExpert().evaluate(code),
+    }
+    experts = {
+        _EXPERT_KR[k]: (round(v.score) if getattr(v, "is_valid", False) else None)
+        for k, v in raw.items()
+    }
+    deficit = [k for k, v in experts.items() if v is None]
+
+    modes = {}
+    for mode in ("bunt", "squeeze"):
+        op = EnsembleScorer(mode=mode).evaluate(code, enriched)
+        modes[mode] = {
+            "score": op.ensemble_score,
+            "filtered": op.filtered,
+            "reason": op.filter_reason,
+        }
+    return {
+        "ok": True, "last_close": last_close,
+        "experts": experts, "deficit": deficit, "modes": modes,
+    }
+
+
+async def cmd_lookup(update: Update, ctx: ContextTypes.DEFAULT_TYPE, query: str):
+    """추천 외 임의 종목 조회 — 풀 앙상블 + 뉴스 + 가상 TP/SL. 정보 전용(매수 버튼 없음)."""
+    user = await _require_approved(update)
+    if not user:
+        return
+
+    code, name, candidates = _resolve_stock(query)
+    if candidates:
+        lines = ["🔎 여러 종목이 검색됐어요 — 코드로 다시 입력:"]
+        lines += [f"  · {n} ({c})" for c, n in candidates]
+        await update.message.reply_text("\n".join(lines))
+        return
+    if not code:
+        await update.message.reply_text(
+            f"'{query}' 종목을 찾지 못했어요.\n"
+            "종목코드 6자리(예: 005930) 또는 정확한 종목명을 입력하세요."
+        )
+        return
+
+    notice = await update.message.reply_text(f"🔎 {name or code} ({code}) 분석 중…")
+    res = await asyncio.to_thread(_evaluate_single, code)
+    from src.bot.scheduler import _fetch_rec_meta
+    meta = await _fetch_rec_meta(code)
+    disp_name = meta.get("company_name") or name or code
+
+    if not res["ok"]:
+        await notice.edit_text(f"🔎 {disp_name} ({code})\n\n⚠ {res['error']}")
+        return
+
+    from src.risk.guard import SWING_MODE_PARAMS, StrategyMode, align_to_tick
+    lc = res["last_close"]
+
+    head = f"🔎 {disp_name} ({code})"
+    if meta.get("sector"):
+        head += f"  ·  {meta['sector']}"
+    lines = [head]
+    if meta.get("why_line"):
+        lines.append(f"💡 왜 이 종목: {meta['why_line']}")
+    if meta.get("fund_line"):
+        lines.append(f"💰 {meta['fund_line']}")
+    lines.append(f"📌 현재가  {lc:,}원")
+
+    # 앙상블 점수 (모드별)
+    lines += ["", "📊 앙상블 점수 (7전문가 가중합 · 미래수익 보장 아님)"]
+    mode_icon = {"bunt": "🟢 번트", "squeeze": "🟠 스퀴즈"}
+    filt_reason = ""
+    for m in ("bunt", "squeeze"):
+        d = res["modes"][m]
+        tag = "  ⚠ 필터탈락" if d["filtered"] else ""
+        lines.append(f"  {mode_icon[m]}  {d['score']:.1f}{tag}")
+        if d["filtered"] and not filt_reason:
+            filt_reason = d["reason"]
+    if filt_reason:
+        lines.append(f"  └ 탈락 사유: {filt_reason}")
+
+    # 전문가별
+    ex = res["experts"]
+    ex_parts = [f"{k} {v:.0f}" if v is not None else f"{k} ✗" for k, v in ex.items()]
+    lines += ["", "🧩 전문가별: " + " · ".join(ex_parts)]
+
+    # 가상 TP/SL (양 모드)
+    lines += ["", f"💵 가상 자동매도 (현재가 {lc:,} 기준 · 주간스윙)"]
+    for m in ("bunt", "squeeze"):
+        p = SWING_MODE_PARAMS[StrategyMode(m)]
+        tp = align_to_tick(lc * (100 + p["tp_pct"]) // 100, "down")
+        sl = align_to_tick(lc * (100 - p["sl_pct"]) // 100, "down")
+        lines.append(
+            f"  {mode_icon[m]}  🎯 +{p['tp_pct']}% {tp:,}  /  🛑 -{p['sl_pct']}% {sl:,}"
+        )
+
+    if meta.get("trend_line"):
+        lines += ["", f"📉 {meta['trend_line']}"]
+    if meta.get("news_lines"):
+        nh = f"📰 최근 뉴스 — {meta['news_summary']}" if meta.get("news_summary") else "📰 최근 뉴스"
+        lines += ["", nh, meta["news_lines"]]
+
+    if res["deficit"]:
+        lines += ["", f"⚠ 데이터 결손: {' · '.join(res['deficit'])} 미수집 "
+                       "(유니버스 밖 종목일 수 있음) — 기술 중심 참고용"]
+    lines += ["", "ℹ 정보 조회 전용입니다. 매수는 /추천 의 실제 추천 종목으로만 진행하세요."]
+
+    await notice.edit_text("\n".join(lines))
+
+
+async def cmd_lookup_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/lookup <코드|종목명> — 임의 종목 조회 진입점."""
+    q = " ".join(ctx.args or []).strip()
+    if not q:
+        await update.message.reply_text(
+            "사용법: /lookup 005930  또는  /lookup 삼성전자\n"
+            "한글로는 '조회 삼성전자' 또는 종목명·코드만 입력해도 됩니다."
+        )
+        return
+    return await cmd_lookup(update, ctx, q)
 
 
 async def cmd_sell(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2078,6 +2324,7 @@ def build_app() -> Application:
             BotCommand("start",     "초대코드로 등록"),
             BotCommand("recommend",   "오늘의 추천 (번트/스퀴즈)"),
             BotCommand("rerecommend", "데이터 최신화 + 재추천 (3-5분)"),
+            BotCommand("lookup",      "임의 종목 정보 조회 (코드/이름)"),
             BotCommand("balance",     "보유 포지션 + 현금"),
             BotCommand("pnl",       "손익 (오늘·미실현·누적·승률)"),
             BotCommand("history",   "거래 히스토리 (최근 7일)"),
@@ -2113,6 +2360,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("recommend", cmd_recommend))
     app.add_handler(CommandHandler("rerecommend", cmd_rerecommend))
+    app.add_handler(CommandHandler("lookup", cmd_lookup_entry))
     app.add_handler(CommandHandler("sell", cmd_sell))
     app.add_handler(CommandHandler("panic", cmd_panic))
     app.add_handler(CommandHandler("refresh_all", cmd_refresh_all))
@@ -2235,6 +2483,13 @@ def build_app() -> Application:
             return await cmd_early(update, ctx)
         elif normalized in ("내전략", "전략", "설정"):
             return await cmd_strategy(update, ctx)
+        elif normalized.startswith(("조회 ", "종목 ", "검색 ")):
+            return await cmd_lookup(update, ctx, normalized.split(" ", 1)[1].strip())
+
+        # catch-all — 단일 토큰(종목코드/이름)으로 보이면 임의 종목 조회 (#2)
+        q = normalized.strip()
+        if q and " " not in q and 2 <= len(q) <= 12:
+            return await cmd_lookup(update, ctx, q)
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _korean_router))
     app.add_error_handler(_error_handler)

@@ -114,6 +114,31 @@ def _sell_tag_keyboard(rec_id: str) -> InlineKeyboardMarkup:
 
 _MODE_LABEL_KR = {"bunt": "번트", "squeeze": "스퀴즈"}
 
+_EXPERT_KR_SCHED = {
+    "technical": "기술", "fundamental": "재무", "flow": "흐름",
+    "news": "뉴스", "minute": "분봉", "community": "커뮤", "youtube": "유튜브",
+}
+
+
+def _lead_experts(expert_scores: dict, mode: str, top_k: int = 2) -> str:
+    """점수를 끌어올린 주도 전문가 — (가중치 × 점수) 기여도 상위 top_k.
+    expert_scores: {영문전문가명: 점수}. 모드별 가중치로 실제 기여를 반영."""
+    if not expert_scores:
+        return ""
+    from src.ensemble.scorer import BUNT_WEIGHTS, SQUEEZE_WEIGHTS
+    w = BUNT_WEIGHTS if mode == "bunt" else SQUEEZE_WEIGHTS
+    contrib = []
+    for name, score in expert_scores.items():
+        try:
+            s = float(score)
+        except (TypeError, ValueError):
+            continue
+        weight = getattr(w, name, 0.0)
+        contrib.append((name, s, s * weight))
+    contrib.sort(key=lambda t: t[2], reverse=True)
+    parts = [f"{_EXPERT_KR_SCHED.get(n, n)} {s:.0f}" for n, s, _ in contrib[:top_k] if s > 0]
+    return " · ".join(parts)
+
 
 # ============================================================
 # 거래일 체크
@@ -252,6 +277,7 @@ async def _fetch_rec_meta(code: str) -> dict:
                WHERE code=? ORDER BY date DESC LIMIT 5""",
             (code,),
         ).fetchall()
+        week_change: float | None = None
         if len(trend_rows) >= 2:
             prices = [row[1] for row in reversed(trend_rows)]
             week_change = (prices[-1] - prices[0]) / prices[0] * 100
@@ -260,14 +286,33 @@ async def _fetch_rec_meta(code: str) -> dict:
         else:
             trend_line = ""
 
+        # 뉴스 — 감성 태그(호재/악재)까지. 단타성 판단에 '소식'이 중요해 앞세운다.
         news_rows = conn.execute(
-            """SELECT title FROM news_article
-               WHERE code=? ORDER BY published_at DESC LIMIT 3""",
+            """SELECT title, sentiment_label, sentiment_score FROM news_article
+               WHERE code=? ORDER BY published_at DESC LIMIT 10""",
             (code,),
         ).fetchall()
         news_lines = ""
+        news_summary = ""
+        n_pos = sum(1 for r in news_rows if (r[1] or "") == "positive")
+        n_neg = sum(1 for r in news_rows if (r[1] or "") == "negative")
+        n_strong_neg = sum(
+            1 for r in news_rows if (r[1] or "") == "negative" and (r[2] or 0.0) <= -0.4
+        )
         if news_rows:
-            news_lines = "\n".join(f"  · {row[0][:40]}" for row in news_rows)
+            _tag = {"positive": "🟢", "negative": "🔴"}
+            shown = []
+            for title, label, _score in news_rows[:3]:
+                shown.append(f"  {_tag.get(label or '', '⚪')} {title[:40]}")
+            news_lines = "\n".join(shown)
+            if n_strong_neg:
+                news_summary = f"최근 뉴스 {len(news_rows)}건 · 🔴강한 악재 {n_strong_neg}건 — 주의"
+            elif n_pos > n_neg:
+                news_summary = f"최근 뉴스 {len(news_rows)}건 · 호재 {n_pos}·악재 {n_neg} — 우호적"
+            elif n_neg > n_pos:
+                news_summary = f"최근 뉴스 {len(news_rows)}건 · 호재 {n_pos}·악재 {n_neg} — 부정적"
+            else:
+                news_summary = f"최근 뉴스 {len(news_rows)}건 · 호재 {n_pos}·악재 {n_neg}"
 
         fund_row = conn.execute(
             "SELECT per, pbr, roe, market_cap FROM fundamentals_snapshot WHERE code=?",
@@ -281,10 +326,45 @@ async def _fetch_rec_meta(code: str) -> dict:
             fund_line = ""
     finally:
         conn.close()
+
+    why_line = _build_why_line(week_change, n_pos, n_neg, n_strong_neg, bool(fund_line))
     return {
         "company_name": company_name, "sector": sector,
-        "trend_line": trend_line, "news_lines": news_lines, "fund_line": fund_line,
+        "trend_line": trend_line, "news_lines": news_lines,
+        "news_summary": news_summary, "fund_line": fund_line,
+        "why_line": why_line,
     }
+
+
+def _build_why_line(
+    week_change: float | None, n_pos: int, n_neg: int,
+    n_strong_neg: int, has_fund: bool,
+) -> str:
+    """'왜 이 종목' 1줄 — 소식(뉴스)을 앞세우고 추세를 덧댄다.
+    캘리브레이션 안 된 앙상블 점수 대신, 사람이 납득할 근거를 평이하게."""
+    factors: list[str] = []
+    # 1) 뉴스(소식) 우선
+    if n_strong_neg:
+        factors.append(f"⚠ 강한 악재 {n_strong_neg}건")
+    elif n_pos and n_neg == 0:
+        factors.append(f"호재 뉴스 {n_pos}건·악재 없음")
+    elif n_pos > n_neg:
+        factors.append(f"호재 우세(호 {n_pos}·악 {n_neg})")
+    elif n_neg > n_pos:
+        factors.append(f"악재 우세(악 {n_neg}·호 {n_pos})")
+    elif n_pos == 0 and n_neg == 0:
+        factors.append("최근 소식 적음")
+    # 2) 추세
+    if week_change is not None:
+        if week_change >= 3:
+            factors.append(f"5일 +{week_change:.1f}% 상승흐름")
+        elif week_change <= -3:
+            factors.append(f"5일 {week_change:.1f}% 조정")
+        else:
+            factors.append(f"5일 {week_change:+.1f}% 횡보")
+    if not factors:
+        return ""
+    return " · ".join(factors)
 
 
 async def _send_single_rec(
@@ -361,7 +441,9 @@ async def _send_unified_rec(
     sector: str = "",
     trend_line: str = "",
     news_lines: str = "",
+    news_summary: str = "",
     fund_line: str = "",
+    why_line: str = "",
 ) -> None:
     """종목 단위 통합 메시지. by_mode 키 'bunt'/'squeeze' 중 있는 것만 모드별 라인 + 매수 버튼.
 
@@ -386,6 +468,8 @@ async def _send_unified_rec(
     head_lines.append(score_line)
     if cross:
         head_lines.append("🔁 양 모드 추천 — 한 모드만 매수하세요")
+    if why_line:
+        head_lines.append(f"💡 왜 이 종목: {why_line}")
     if fund_line:
         head_lines.append(f"💰 {fund_line}")
 
@@ -406,11 +490,14 @@ async def _send_unified_rec(
             f"  🛑 손절   {d['stop_price']:,}원",
             f"  추천      {d['estimated_quantity']}주  =  {d['order_value']:,}원",
         ]
+        if d.get("lead"):
+            lines.append(f"  🧩 주도   {d['lead']}")
 
     if trend_line:
         lines += ["", f"📉 {trend_line}"]
     if news_lines:
-        lines += ["", "📰 최근 뉴스", news_lines]
+        news_head = f"📰 최근 뉴스 — {news_summary}" if news_summary else "📰 최근 뉴스"
+        lines += ["", news_head, news_lines]
 
     rec_ids = [by_mode[m]["rec_id"] for m in modes_present]
     lines += ["", f"🪪 {' · '.join(rec_ids)}  ·  ⏱ 10분 내 결정"]
@@ -459,7 +546,7 @@ def _cached_recs_for_today(
     try:
         return conn.execute(
             """SELECT r.rec_id, r.code, r.entry_price, r.target_price, r.stop_price,
-                      r.expected_return_pct, r.ensemble_score
+                      r.expected_return_pct, r.ensemble_score, r.reason_json
                FROM recommendations r
                INNER JOIN (
                  SELECT code, MAX(rec_id) AS canonical_rec_id
@@ -536,12 +623,21 @@ async def send_cached_recommendations_dual(
     per_cap = config.SEED_KRW * PER_POSITION_CAP_PCT // 100
 
     # 종목별 dedup
+    import json as _json
     by_code: dict[str, dict] = {}
     for mode, rows in (("bunt", bunt_rows), ("squeeze", squeeze_rows)):
-        for rec_id, code, entry_price, tp, sl, exp_ret, score in rows:
+        for rec_id, code, entry_price, tp, sl, exp_ret, score, reason_json in rows:
             qty = per_cap // entry_price if entry_price > 0 else 0
             if qty < 1:
                 continue
+            lead = ""
+            if reason_json:
+                try:
+                    lead = _lead_experts(
+                        _json.loads(reason_json).get("expert_scores", {}), mode
+                    )
+                except (ValueError, TypeError):
+                    lead = ""
             by_code.setdefault(code, {})[mode] = {
                 "rec_id": rec_id,
                 "entry_price": int(entry_price),
@@ -551,6 +647,7 @@ async def send_cached_recommendations_dual(
                 "ensemble_score": float(score or 0),
                 "estimated_quantity": qty,
                 "order_value": int(entry_price) * qty,
+                "lead": lead,
             }
 
     def _sort_key(item):
@@ -581,11 +678,23 @@ async def send_recommendations_dual(
     chat_id: int,
     codes: list[str],
     force_fresh: bool = False,
+    *,
+    modes: tuple[str, ...] = ("bunt", "squeeze"),
+    min_score: float | None = None,
+    active_seed_krw: int | None = None,
 ) -> int:
-    """양 모드 신규 계산 후 발송. 발송 건수 반환.
+    """양 모드(기본) 신규 계산 후 발송. 발송 건수 반환.
     force_fresh=True 면 오늘자 추천이 이미 있어도 새로 계산 (refresh 시나리오).
+
+    modes/min_score/active_seed_krw 는 단타 전환(레짐 트립) 같은 축소 발송용 오버라이드.
+    기본값이면 평시 동작(번트+스퀴즈, config 기준)을 그대로 보존.
     """
     from datetime import date as _date
+
+    if min_score is None:
+        min_score = config.RECOMMEND_MIN_SCORE
+    if active_seed_krw is None:
+        active_seed_krw = config.SEED_KRW
 
     today_iso = _date.today().isoformat()
     # 진입 가드: 같은 (chat_id, session_date) 추천이 이미 있으면 cache replay 로 위임.
@@ -607,35 +716,34 @@ async def send_recommendations_dual(
             return await send_cached_recommendations_dual(bot, chat_id, today_iso)
 
     # recommend() 는 동기 함수 + 종목당 expert 평가로 4-6분 소요 → event loop 차단 방지를 위해
-    # 양 모드 병렬 executor 호출. 그 사이 매수 callback / pending_rec_monitor 등 정상 동작.
+    # 모드별 병렬 executor 호출. 그 사이 매수 callback / pending_rec_monitor 등 정상 동작.
     import asyncio as _asyncio
-    bunt_picks, squeeze_picks = await _asyncio.gather(
-        _asyncio.to_thread(
+    _mode_tasks = {
+        m: _asyncio.to_thread(
             recommend,
-            codes=codes, active_seed_krw=config.SEED_KRW,
-            mode="bunt", top_n=10, min_score=config.RECOMMEND_MIN_SCORE,
-        ),
-        _asyncio.to_thread(
-            recommend,
-            codes=codes, active_seed_krw=config.SEED_KRW,
-            mode="squeeze", top_n=10, min_score=config.RECOMMEND_MIN_SCORE,
-        ),
-    )
-    picks_by_mode = {"bunt": bunt_picks, "squeeze": squeeze_picks}
+            codes=codes, active_seed_krw=active_seed_krw,
+            mode=m, top_n=10, min_score=min_score,
+        )
+        for m in modes
+    }
+    _results = await _asyncio.gather(*_mode_tasks.values())
+    picks_by_mode = dict(zip(_mode_tasks.keys(), _results))
 
-    bunt_codes = {p.opinion.code for p in picks_by_mode["bunt"]}
-    squeeze_codes = {p.opinion.code for p in picks_by_mode["squeeze"]}
+    bunt_codes = {p.opinion.code for p in picks_by_mode.get("bunt", [])}
+    squeeze_codes = {p.opinion.code for p in picks_by_mode.get("squeeze", [])}
     cross = bunt_codes & squeeze_codes
 
     audit_service.log_event(chat_id, "recommend_push", {
-        "mode": "dual",
+        "mode": "+".join(modes),
         "n_candidates": len(codes),
-        "n_picks_bunt": len(picks_by_mode["bunt"]),
-        "n_picks_squeeze": len(picks_by_mode["squeeze"]),
+        "n_picks_bunt": len(picks_by_mode.get("bunt", [])),
+        "n_picks_squeeze": len(picks_by_mode.get("squeeze", [])),
+        "min_score": min_score,
+        "active_seed_krw": active_seed_krw,
         "source": "scheduler",
     })
 
-    if not picks_by_mode["bunt"] and not picks_by_mode["squeeze"]:
+    if not any(picks_by_mode.values()):
         await bot.send_message(
             chat_id, "오늘 추천 종목 없음 (조건 미달 또는 데이터 부족)",
         )
@@ -645,13 +753,13 @@ async def send_recommendations_dual(
         chat_id,
         await _group_header_text(
             chat_id, today_iso,
-            len(picks_by_mode["bunt"]), len(picks_by_mode["squeeze"]), len(cross),
+            len(picks_by_mode.get("bunt", [])), len(picks_by_mode.get("squeeze", [])), len(cross),
         ),
     )
 
     # 1) 모든 picks 를 DB에 INSERT 하고 종목별로 dedup (rec_id 발급)
     by_code: dict[str, dict] = {}
-    for mode in ("bunt", "squeeze"):
+    for mode in picks_by_mode:
         for r in picks_by_mode[mode]:
             expected_return_pct = round(
                 (r.target_price - r.last_close) / r.last_close * 100, 2
@@ -687,6 +795,7 @@ async def send_recommendations_dual(
                 "ensemble_score": r.opinion.ensemble_score,
                 "estimated_quantity": r.estimated_quantity,
                 "order_value": r.order_value,
+                "lead": _lead_experts(expert_scores, mode),
             }
 
     # 2) 종목별 통합 메시지 발송 — bunt 우선 정렬, score 내림차순
@@ -841,19 +950,29 @@ async def job_morning_recommend(ctx: ContextTypes.DEFAULT_TYPE):
         log.info("morning_recommend: 오늘은 KRX 휴장일 — 추천 발송 생략")
         return
 
-    # 시장 레짐 체크 — 전일 코스피 급락 시 추천 보류
+    # 시장 레짐 체크 — 전일 코스피 급락 시.
+    #   기존: 추천 통째 보류(침묵).
+    #   현재: REGIME_DEGRADED_ENABLED 면 "단타 전환"(번트 only · 높은 점수 바 · 축소 수량)으로 발송.
+    #         번트왕이 급변장에 입을 닫지 않도록 — 최상위 셋업만 작은 사이즈로.
     market_ok, market_reason = await _check_market_regime(ctx.bot)
+    degraded = False
     if not market_ok:
-        users = _get_approved_users()
-        for u in users:
-            try:
-                await ctx.bot.send_message(
-                    u.chat_id,
-                    f"⚠ 오늘 추천 보류\n\n{market_reason}\n\n시장이 안정되면 내일 재개합니다.",
-                )
-            except Exception:
-                pass
-        return
+        if not config.REGIME_DEGRADED_ENABLED:
+            users = _get_approved_users()
+            for u in users:
+                try:
+                    await ctx.bot.send_message(
+                        u.chat_id,
+                        f"⚠ 오늘 추천 보류\n\n{market_reason}\n\n시장이 안정되면 내일 재개합니다.",
+                    )
+                except Exception:
+                    pass
+            return
+        degraded = True
+        log.warning(
+            "morning_recommend: 레짐 트립 → 단타 전환 (번트 only, min_score=%.0f, seed=%d%%) — %s",
+            config.REGIME_DEGRADED_MIN_SCORE, config.REGIME_DEGRADED_SEED_PCT, market_reason,
+        )
 
     # 추천 발송
     codes = _list_candidate_codes()
@@ -866,11 +985,32 @@ async def job_morning_recommend(ctx: ContextTypes.DEFAULT_TYPE):
         log.info("morning_recommend: 승인된 사용자 없음")
         return
 
-    log.info("morning_recommend: %d 사용자 × %d 후보 종목", len(users), len(codes))
+    log.info(
+        "morning_recommend: %d 사용자 × %d 후보 종목%s",
+        len(users), len(codes), " [단타 전환]" if degraded else "",
+    )
+    degraded_seed = config.SEED_KRW * config.REGIME_DEGRADED_SEED_PCT // 100
     for u in users:
         try:
-            n = await send_recommendations_dual(ctx.bot, u.chat_id, codes)
-            log.info("morning_recommend: chat_id=%s sent=%d", u.chat_id, n)
+            if degraded:
+                await ctx.bot.send_message(
+                    u.chat_id,
+                    f"⚡ 급변장 단타 전환\n\n{market_reason}\n\n"
+                    "평시 추천은 보류하되, 번트(단타) 관점으로 최상위 셋업만 축소 수량으로 제시합니다.\n"
+                    f"· 점수 바 {config.REGIME_DEGRADED_MIN_SCORE:.0f}점↑  "
+                    f"· 수량 평시의 {config.REGIME_DEGRADED_SEED_PCT}%  · 스퀴즈(공격) 제외\n"
+                    "진입은 더 신중히, 손절은 엄격히. 종목이 없으면 \"추천 없음\"으로 알립니다.",
+                )
+                n = await send_recommendations_dual(
+                    ctx.bot, u.chat_id, codes,
+                    modes=("bunt",),
+                    min_score=config.REGIME_DEGRADED_MIN_SCORE,
+                    active_seed_krw=degraded_seed,
+                )
+            else:
+                n = await send_recommendations_dual(ctx.bot, u.chat_id, codes)
+            log.info("morning_recommend: chat_id=%s sent=%d%s",
+                     u.chat_id, n, " [단타]" if degraded else "")
         except Exception:
             log.exception("morning_recommend: chat_id=%s 실패", u.chat_id)
 

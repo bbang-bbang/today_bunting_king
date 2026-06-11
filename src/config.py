@@ -66,6 +66,16 @@ RECOMMEND_MIN_SCORE = float(_env("RECOMMEND_MIN_SCORE", "60"))
 # 0 으로 설정 시 필터 비활성화.
 MARKET_DOWN_THRESHOLD_PCT = float(_env("MARKET_DOWN_THRESHOLD_PCT", "-1.5"))
 
+# 레짐 가드 트립 시 동작.
+#   true  → 추천을 통째 보류하지 않고 "단타 전환"(번트 only · 높은 점수 바 · 축소 수량)으로 발송.
+#           번트왕이 급변장에 입을 닫지 않도록 — 최상위 셋업만 작은 사이즈로.
+#   false → 기존 동작(추천 보류 메시지만 발송).
+REGIME_DEGRADED_ENABLED = _env("REGIME_DEGRADED_ENABLED", "true").lower() in ("1", "true", "yes")
+# 단타 전환 모드 최소 앙상블 점수 (평시 RECOMMEND_MIN_SCORE 보다 높게 — 급변장엔 최상위 셋업만).
+REGIME_DEGRADED_MIN_SCORE = float(_env("REGIME_DEGRADED_MIN_SCORE", "70"))
+# 단타 전환 모드 시드 투입 비율 (%). 포지션당 금액을 줄여 리스크 감축. 1~100.
+REGIME_DEGRADED_SEED_PCT = max(1, min(100, int(_env("REGIME_DEGRADED_SEED_PCT", "50"))))
+
 
 def require_live_keys() -> None:
     """live 모드 진입 시 호출 — 키 누락이면 예외."""
