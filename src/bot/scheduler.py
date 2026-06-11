@@ -2600,6 +2600,16 @@ async def job_minute_collect(ctx: ContextTypes.DEFAULT_TYPE):
         log.info("minute_collect: 완료 — %d 행 (%d 종목)", n, len(codes))
     except Exception:
         log.exception("minute_collect: 분봉 수집 실패")
+        return
+
+    # 수집 성공 시에만 오래된 분봉 정리 — 수집 실패한 날엔 건너뛰어 마지막 정상 세션 보존.
+    keep = config.OHLCV_MINUTE_RETENTION_DAYS
+    if n > 0 and keep > 0:
+        try:
+            deleted = await asyncio.to_thread(fetch_ohlcv_minute.purge, _date.today(), keep)
+            log.info("minute_collect: 오래된 분봉 정리 — %d 행 삭제 (보존 %d일)", deleted, keep)
+        except Exception:
+            log.exception("minute_collect: 분봉 정리 실패 (수집은 성공)")
 
 
 # ============================================================

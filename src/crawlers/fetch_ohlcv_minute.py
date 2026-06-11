@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
-from datetime import date
+from datetime import date, timedelta
 
 from src.adapters.market_data_kis import KISMarketDataSource
 from src.adapters.market_data_base import MinuteBar
@@ -38,6 +38,30 @@ def upsert_minute_bars(conn, bars: list[MinuteBar]) -> int:
         rows,
     )
     return len(rows)
+
+
+def purge_old_bars(conn, as_of: date, keep_days: int) -> int:
+    """as_of 기준 keep_days 보다 오래된 분봉 삭제. 삭제 행수 반환.
+
+    분봉 expert 는 직전 세션 하루만 읽으므로, 보존창(주말·연휴 커버)만 남기고 정리해
+    ohlcv_minute 테이블을 가볍게 유지한다. keep_days<=0 이면 정리 안 함.
+    """
+    if keep_days <= 0:
+        return 0
+    cutoff = (as_of - timedelta(days=keep_days)).isoformat()
+    cur = conn.execute(
+        "DELETE FROM ohlcv_minute WHERE datetime < ?", (f"{cutoff} 00:00",)
+    )
+    return cur.rowcount
+
+
+def purge(as_of: date, keep_days: int) -> int:
+    """purge_old_bars 의 커넥션 관리 래퍼 (스케줄러 잡에서 호출)."""
+    conn = get_connection()
+    try:
+        return purge_old_bars(conn, as_of, keep_days)
+    finally:
+        conn.close()
 
 
 def list_codes(conn, only_tradable: bool = True) -> list[str]:

@@ -64,6 +64,11 @@ BALANCE_PERIODIC_MINUTES = int(_env("BALANCE_PERIODIC_MINUTES", "0"))
 # 매수·매도 직후엔 자동 무효화되어 항상 최신 반영. 0 이면 캐시 비활성. (기본 8)
 BALANCE_CACHE_TTL_SEC = float(_env("BALANCE_CACHE_TTL_SEC", "8"))
 
+# 분봉(ohlcv_minute) 보존 일수. 분봉 expert 는 직전 세션 하루만 읽으므로, 주말·연휴 클러스터를
+# 덮을 보존창만 남기고 그보다 오래된 분봉은 마감 후 수집 잡 끝에 자동 정리한다.
+# (수집 성공 시에만 정리 → 수집 실패한 날은 마지막 정상 세션 보존). 0 이면 정리 비활성. (기본 10)
+OHLCV_MINUTE_RETENTION_DAYS = int(_env("OHLCV_MINUTE_RETENTION_DAYS", "10"))
+
 # 추천 최소 앙상블 점수 (0~100). 기본 60 — 5/7 임계 컷으로 picks 부족 (62 시 4건) → 60 으로 완화.
 RECOMMEND_MIN_SCORE = float(_env("RECOMMEND_MIN_SCORE", "60"))
 
